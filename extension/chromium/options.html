@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TimeToll pairing</title>
+  <style>
+    :root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
+    body { max-width: 650px; margin: 64px auto; padding: 0 24px; }
+    h1 { font-size: 30px; margin-bottom: 8px; }
+    label { display: block; margin-top: 24px; font-weight: 600; }
+    input { display: block; box-sizing: border-box; width: 100%; padding: 12px; margin-top: 6px; font: inherit; border: 1px solid #888; border-radius: 6px; }
+    button { margin-top: 28px; padding: 12px 24px; font: inherit; cursor: pointer; }
+    code { background: #8882; padding: 2px 5px; }
+    #status { padding-top: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    small { font-weight: 400; }
+  </style>
+</head>
+<body>
+  <h1>Connect to TimeToll</h1>
+  <p>Run <code>timetoll pair</code> in your terminal and enter the settings below. Keep <code>timetoll run</code> running while you use the browser.</p>
+  <form id="pairing">
+    <label>Bridge URL<input id="endpoint" type="url" value="http://127.0.0.1:47821" required></label>
+    <label>Pairing token<input id="token" type="password" autocomplete="off" minlength="32" maxlength="128" required></label>
+    <label>Browser app identifier<input id="app" type="text" spellcheck="false" required></label>
+    <p><small>Run <code>timetoll apps</code>, then switch to this browser to find its identifier. Chrome uses <code>com.google.Chrome</code> on macOS or <code>chrome.exe</code> on Windows.</small></p>
+    <button type="submit">Save and test connection</button>
+  </form>
+  <p id="status" role="status" aria-live="polite"></p>
+  <p><small>The extension sends the active tab URL and browser identifier to your computer once per second. TimeToll keeps URLs in memory only. No data leaves your computer.</small></p>
+  <script src="options.js"></script>
+</body>
+</html>

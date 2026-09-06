@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "TimeToll browser bridge",
+  "version": "0.1.0",
+  "description": "Report the active tab to the local TimeToll CLI.",
+  "minimum_chrome_version": "120",
+  "permissions": ["tabs", "storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "action": { "default_title": "Configure TimeToll" }
+}
