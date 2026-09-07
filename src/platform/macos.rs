@@ -5,9 +5,9 @@ use std::ffi::{CStr, CString, c_char};
 unsafe extern "C" {
     fn tt_init() -> bool;
     fn tt_pump();
-    fn tt_foreground(buffer: *mut c_char, size: usize, pid: *mut u32) -> bool;
+    fn tt_foreground(buffer: *mut c_char, size: usize, pid: *mut u32, window_id: *mut u64) -> bool;
     fn tt_idle_seconds() -> f64;
-    fn tt_show(message: *const c_char, browser: bool);
+    fn tt_show(window_id: u64, pid: u32, message: *const c_char, browser: bool) -> bool;
     fn tt_hide(restore_pid: u32);
     fn tt_take_new_tab() -> bool;
 }
@@ -33,12 +33,14 @@ impl Desktop {
     pub fn foreground(&self) -> Option<Foreground> {
         let mut buffer = [0 as c_char; 1024];
         let mut pid = 0;
-        if unsafe { tt_foreground(buffer.as_mut_ptr(), buffer.len(), &mut pid) } {
+        let mut window_id = 0;
+        if unsafe { tt_foreground(buffer.as_mut_ptr(), buffer.len(), &mut pid, &mut window_id) } {
             Some(Foreground {
                 app: unsafe { CStr::from_ptr(buffer.as_ptr()) }
                     .to_string_lossy()
                     .into_owned(),
                 pid,
+                window_id,
             })
         } else {
             None
@@ -47,10 +49,9 @@ impl Desktop {
     pub fn idle_seconds(&self) -> f64 {
         unsafe { tt_idle_seconds() }
     }
-    pub fn show(&mut self, message: &str, browser: bool) -> Result<()> {
+    pub fn show(&mut self, target: &Foreground, message: &str, browser: bool) -> Result<bool> {
         let message = CString::new(message.replace('\0', "")).unwrap();
-        unsafe { tt_show(message.as_ptr(), browser) }
-        Ok(())
+        Ok(unsafe { tt_show(target.window_id, target.pid, message.as_ptr(), browser) })
     }
     pub fn hide(&mut self, restore_pid: Option<u32>) {
         unsafe { tt_hide(restore_pid.unwrap_or(0)) }

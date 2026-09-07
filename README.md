@@ -2,7 +2,7 @@
 
 A Rust CLI for macOS and Windows that trades time in selected apps and websites for access to distracting ones.
 
-By default, 15 minutes in the earning group earns 10 minutes of access to the blocked group. Credit accumulates in one shared balance. TimeToll covers the desktop with native topmost windows when a blocked target is active and the balance is empty.
+By default, 15 minutes in the earning group earns 10 minutes of access to the blocked group. Credit accumulates in one shared balance. TimeToll covers the active blocked window with a native topmost overlay when the balance is empty. The overlay follows that window's bounds in windowed and fullscreen modes.
 
 It runs in your desktop session without administrator access, Accessibility permission, Screen Recording permission, a VPN, or changes to the hosts file. Website tracking uses the included browser extension and its tab URL permission. App tracking works without the extension.
 
@@ -109,7 +109,7 @@ timetoll doctor
 timetoll preview
 ```
 
-`doctor` checks configuration, state, and foreground app detection. `preview` shows the native blocking window for five seconds without changing credit. `config` redacts the token; `pair` intentionally displays it.
+`doctor` checks configuration, state, and foreground app detection. `preview` covers the current foreground window for five seconds without changing credit. Use `preview --seconds 20` for a longer check. `config` redacts the token; `pair` intentionally displays it.
 
 `init` prints the configuration path. Use `--data-dir PATH` with any command to override it. Keep `config.toml` and `state.json` together. The token is private to that configuration; do not publish it or commit it to source control.
 
@@ -119,7 +119,11 @@ The browser listener binds only to `127.0.0.1`. It requires a pairing token, val
 
 ## What window blocking can do
 
-TimeToll creates an opaque window on each display. On macOS it uses AppKit windows above normal apps and across Spaces, and requests keyboard focus. On Windows it uses topmost Win32 windows and requests foreground activation. The monitor hides them when you switch to an allowed app or page. They absorb pointer input over covered content. They absorb keyboard input when the OS gives them focus.
+TimeToll creates one opaque overlay over the active blocked app window. For a website rule, the overlay covers the browser window containing the active blocked tab, including its browser controls. Other windows and the rest of the desktop remain uncovered. Use the overlay's new-tab button to open an allowed page.
+
+The overlay tracks the same native window ID while it has focus and refreshes position and size every 250 milliseconds. Moving, resizing, maximizing, changing displays, and entering or leaving fullscreen update the overlay bounds. Closing, hiding, or minimizing the target removes the overlay once the OS finishes its window animation. If the window bounds cannot be obtained, TimeToll hides the overlay; it never substitutes a whole-screen overlay.
+
+On macOS it reads window geometry through Core Graphics and positions an AppKit window across Spaces. It does not read window titles or capture screen images. On Windows it uses DWM visible frame bounds with per-monitor DPI awareness, falling back to the native window rectangle if DWM cannot supply bounds. Both platforms request keyboard focus. Switching to an allowed app or page hides the overlay. It absorbs pointer input over covered content and keyboard input when the OS gives it focus.
 
 A regular desktop window cannot enforce a tamper-proof restriction. You can quit TimeToll, edit its files, disable its extension, use an unconfigured browser, or use OS escape controls. Windows may refuse foreground activation; clicking the overlay gives it keyboard focus. Secure desktops, elevated applications, exclusive fullscreen games, and other topmost windows can defeat or cover an overlay. Polling also means a newly selected page may appear briefly before the overlay. Background audio, downloads, and network requests continue.
 
@@ -138,4 +142,12 @@ The GitHub Actions workflow checks macOS, Windows, and Linux, then uploads nativ
 
 Edit the extension implementation in `extension/chromium`, then run `sh extension/sync.sh` to copy the shared files into `extension/firefox`. The test suite checks that the copies agree.
 
-For a desktop acceptance test, use a separate `--data-dir`, set a short ratio such as 5 earning seconds to 3 unlock seconds, and configure a harmless earning app and blocked app. Verify earning, spending, idle behavior, focus switching, monitor sleep, and multi-display overlays. Repeat with a blocked domain and a whitelisted path. Check the new-tab button, an extension disconnect, restart persistence, and rule reload. Windows desktop behavior needs testing on a Windows machine; a cross-target build check cannot verify focus or rendering.
+For a desktop acceptance test, use a separate `--data-dir`, set a short ratio such as 5 earning seconds to 3 unlock seconds, and configure a harmless earning app and blocked app. Verify earning, spending, idle behavior, focus switching, monitor sleep, and moving the target between displays. Repeat with a blocked domain and a whitelisted path. Check the new-tab button, an extension disconnect, restart persistence, and rule reload. Windows desktop behavior needs testing on a Windows machine; a cross-target build check cannot verify focus or rendering.
+
+The macOS geometry regression test creates its own temporary windows and checks movement, resizing, fullscreen transitions, minimizing, closing, and coordinate conversion for displays around the primary screen. Run it in a logged-in desktop session:
+
+```sh
+mkdir -p target
+cc -fobjc-arc -Wno-deprecated-declarations native/macos_test.m -framework AppKit -framework ApplicationServices -o target/macos-window-tests
+./target/macos-window-tests --fullscreen
+```

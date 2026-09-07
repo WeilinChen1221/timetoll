@@ -6,9 +6,10 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::*,
-    Graphics::Gdi::*,
+    Graphics::{Dwm::*, Gdi::*},
     System::{LibraryLoader::GetModuleHandleW, SystemInformation::GetTickCount64, Threading::*},
     UI::{
+        HiDpi::*,
         Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO},
         WindowsAndMessaging::*,
     },
@@ -36,7 +37,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, w: WPARAM, l: LP
                 SetTextColor(dc, 0x00ffffff);
                 SetBkMode(dc, TRANSPARENT as i32);
                 let font = CreateFontW(
-                    -24,
+                    -((rect.bottom / 21).min(rect.right / 28).clamp(8, 24)),
                     0,
                     0,
                     0,
@@ -54,11 +55,26 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, w: WPARAM, l: LP
                 let old_font = SelectObject(dc, font);
                 let mut text = [0u16; 2048];
                 let len = GetWindowTextW(hwnd, text.as_mut_ptr(), text.len() as i32);
-                let center = (rect.bottom - rect.top) / 2;
-                rect.top = center - 180;
-                rect.bottom = center + 140;
-                rect.left += 40;
-                rect.right -= 40;
+                let padding = (rect.right.min(rect.bottom) / 10).clamp(1, 16);
+                let reserve = if IsWindowVisible(GetDlgItem(hwnd, 1)) != 0 {
+                    (rect.bottom / 5).clamp(1, 32) + 16
+                } else {
+                    0
+                };
+                rect.top += padding;
+                rect.bottom = (rect.bottom - reserve - padding).max(rect.top + 1);
+                rect.left += padding;
+                rect.right = (rect.right - padding).max(rect.left + 1);
+                let mut measured = rect;
+                DrawTextW(
+                    dc,
+                    text.as_ptr(),
+                    len,
+                    &mut measured,
+                    DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX,
+                );
+                rect.top +=
+                    ((rect.bottom - rect.top - (measured.bottom - measured.top)) / 2).max(0);
                 DrawTextW(
                     dc,
                     text.as_ptr(),
@@ -76,29 +92,62 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, w: WPARAM, l: LP
     }
 }
 
-unsafe extern "system" fn collect_monitor(
-    _: HMONITOR,
-    _: HDC,
-    rect: *mut RECT,
-    data: LPARAM,
-) -> i32 {
+// DWM bounds exclude invisible resize borders and are physical pixels. The
+// per-monitor DPI context keeps SetWindowPos in the same coordinate system.
+unsafe fn target_bounds(target: &Foreground) -> Option<RECT> {
     unsafe {
-        (&mut *(data as *mut Vec<RECT>)).push(*rect);
+        let hwnd = target.window_id as usize as HWND;
+        let mut pid = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if target.window_id == 0
+            || pid != target.pid
+            || IsWindowVisible(hwnd) == 0
+            || IsIconic(hwnd) != 0
+        {
+            return None;
+        }
+        let mut cloaked = 0u32;
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED as u32,
+            &mut cloaked as *mut _ as _,
+            size_of::<u32>() as u32,
+        );
+        if cloaked != 0 {
+            return None;
+        }
+        let mut rect: RECT = std::mem::zeroed();
+        if DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS as u32,
+            &mut rect as *mut _ as _,
+            size_of::<RECT>() as u32,
+        ) < 0
+            && GetWindowRect(hwnd, &mut rect) == 0
+        {
+            return None;
+        }
+        (rect.right > rect.left && rect.bottom > rect.top).then_some(rect)
     }
-    1
 }
 
 pub struct Desktop {
-    windows: Vec<(HWND, HWND)>,
+    window: Option<(HWND, HWND)>,
     visible: bool,
-    last_foreground: std::cell::Cell<HWND>,
+    target: Option<(HWND, u32)>,
     message: String,
 }
 
 impl Desktop {
     pub fn new() -> Result<Self> {
         unsafe {
-            SetProcessDPIAware();
+            if SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) == 0 {
+                ensure!(
+                    !SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+                        .is_null(),
+                    "cannot enable per-monitor DPI awareness"
+                );
+            }
             let class = wide("TimeTollOverlay");
             let wc = WNDCLASSW {
                 lpfnWndProc: Some(window_proc),
@@ -114,9 +163,9 @@ impl Desktop {
             );
         }
         Ok(Self {
-            windows: vec![],
+            window: None,
             visible: false,
-            last_foreground: std::cell::Cell::new(null_mut()),
+            target: None,
             message: String::new(),
         })
     }
@@ -133,7 +182,7 @@ impl Desktop {
 
     pub fn foreground(&self) -> Option<Foreground> {
         unsafe {
-            let hwnd = GetForegroundWindow();
+            let hwnd = GetAncestor(GetForegroundWindow(), GA_ROOT);
             let mut pid = 0;
             GetWindowThreadProcessId(hwnd, &mut pid);
             if pid == 0 {
@@ -143,9 +192,9 @@ impl Desktop {
                 return Some(Foreground {
                     app: "timetoll.exe".into(),
                     pid,
+                    window_id: hwnd as usize as u64,
                 });
             }
-            self.last_foreground.set(hwnd);
             let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             if process.is_null() {
                 return None;
@@ -161,6 +210,7 @@ impl Desktop {
             Some(Foreground {
                 app: path.rsplit('\\').next()?.to_string(),
                 pid,
+                window_id: hwnd as usize as u64,
             })
         }
     }
@@ -178,97 +228,96 @@ impl Desktop {
         }
     }
 
-    pub fn show(&mut self, message: &str, browser: bool) -> Result<()> {
+    pub fn show(&mut self, target: &Foreground, message: &str, browser: bool) -> Result<bool> {
         unsafe {
-            let mut monitors: Vec<RECT> = vec![];
-            EnumDisplayMonitors(
-                null_mut(),
-                null(),
-                Some(collect_monitor),
-                &mut monitors as *mut _ as LPARAM,
-            );
-            ensure!(
-                !monitors.is_empty(),
-                "cannot find a display for the blocking window"
-            );
-            if monitors.len() != self.windows.len() {
-                for (hwnd, _) in self.windows.drain(..) {
-                    DestroyWindow(hwnd);
-                }
-                for _ in &monitors {
-                    let hwnd = CreateWindowExW(
-                        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-                        wide("TimeTollOverlay").as_ptr(),
-                        wide(message).as_ptr(),
-                        WS_POPUP,
-                        0,
-                        0,
-                        1,
-                        1,
-                        null_mut(),
-                        null_mut(),
-                        GetModuleHandleW(null()),
-                        null(),
-                    );
-                    ensure!(
-                        !hwnd.is_null(),
-                        "cannot create blocking window: {}",
-                        std::io::Error::last_os_error()
-                    );
-                    let button = CreateWindowExW(
-                        0,
-                        wide("BUTTON").as_ptr(),
-                        wide("Open a new browser tab").as_ptr(),
-                        WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON as u32,
-                        0,
-                        0,
-                        260,
-                        42,
-                        hwnd,
-                        1 as HMENU,
-                        GetModuleHandleW(null()),
-                        null(),
-                    );
-                    self.windows.push((hwnd, button));
-                    ensure!(
-                        !button.is_null(),
-                        "cannot create the new-tab button: {}",
-                        std::io::Error::last_os_error()
-                    );
-                }
-                self.visible = false;
+            let Some(rect) = target_bounds(target) else {
+                self.hide(None);
+                return Ok(false);
+            };
+            if self.window.is_none() {
+                let hwnd = CreateWindowExW(
+                    WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                    wide("TimeTollOverlay").as_ptr(),
+                    wide(message).as_ptr(),
+                    WS_POPUP,
+                    0,
+                    0,
+                    1,
+                    1,
+                    null_mut(),
+                    null_mut(),
+                    GetModuleHandleW(null()),
+                    null(),
+                );
+                ensure!(
+                    !hwnd.is_null(),
+                    "cannot create blocking window: {}",
+                    std::io::Error::last_os_error()
+                );
+                // Save the handle before the next fallible operation for Drop.
+                self.window = Some((hwnd, null_mut()));
+                let button = CreateWindowExW(
+                    0,
+                    wide("BUTTON").as_ptr(),
+                    wide("Open a new browser tab").as_ptr(),
+                    WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON as u32,
+                    0,
+                    0,
+                    260,
+                    32,
+                    hwnd,
+                    1 as HMENU,
+                    GetModuleHandleW(null()),
+                    null(),
+                );
+                ensure!(
+                    !button.is_null(),
+                    "cannot create the new-tab button: {}",
+                    std::io::Error::last_os_error()
+                );
+                self.window = Some((hwnd, button));
             }
-            let changed = self.message != message;
-            for ((hwnd, button), rect) in self.windows.iter().zip(&monitors) {
-                let width = rect.right - rect.left;
-                let height = rect.bottom - rect.top;
+            let (hwnd, button) = self.window.unwrap();
+            let width = rect.right - rect.left;
+            let height = rect.bottom - rect.top;
+            ensure!(
                 SetWindowPos(
-                    *hwnd,
+                    hwnd,
                     HWND_TOPMOST,
                     rect.left,
                     rect.top,
                     width,
                     height,
-                    SWP_SHOWWINDOW | SWP_NOACTIVATE,
-                );
-                if changed || !self.visible {
-                    SetWindowTextW(*hwnd, wide(message).as_ptr());
-                    InvalidateRect(*hwnd, null(), 1);
-                }
-                MoveWindow(*button, (width - 260) / 2, height / 2 + 160, 260, 42, 1);
-                ShowWindow(*button, if browser { SW_SHOWNA } else { SW_HIDE });
+                    SWP_SHOWWINDOW | SWP_NOACTIVATE
+                ) != 0,
+                "cannot position blocking window: {}",
+                std::io::Error::last_os_error()
+            );
+            if self.message != message || !self.visible {
+                SetWindowTextW(hwnd, wide(message).as_ptr());
             }
-            let foreground = GetForegroundWindow();
-            let ours = self.windows.iter().any(|(hwnd, _)| *hwnd == foreground);
-            if !ours && let Some((hwnd, _)) = self.windows.first() {
-                // Windows may refuse foreground activation. The window still
-                // covers the desktop; clicking it gives it keyboard focus.
-                SetForegroundWindow(*hwnd);
+            let button_width = (width - 16).clamp(1, 260);
+            let button_height = (height / 5).clamp(1, 32);
+            MoveWindow(
+                button,
+                (width - button_width) / 2,
+                (height - button_height - 8).max(0),
+                button_width,
+                button_height,
+                1,
+            );
+            ShowWindow(button, if browser { SW_SHOWNA } else { SW_HIDE });
+            InvalidateRect(hwnd, null(), 1);
+            if GetForegroundWindow() != hwnd {
+                // Windows may refuse activation. Clicking the overlay gives it
+                // keyboard focus; its bounds still cover only the target.
+                SetForegroundWindow(hwnd);
             }
+            self.target = Some((target.window_id as usize as HWND, target.pid));
             self.message = message.to_string();
             self.visible = true;
         }
-        Ok(())
+        Ok(true)
     }
 
     pub fn hide(&mut self, restore_pid: Option<u32>) {
@@ -279,13 +328,16 @@ impl Desktop {
             let mut pid = 0;
             GetWindowThreadProcessId(GetForegroundWindow(), &mut pid);
             let restore = pid == std::process::id();
-            for (hwnd, _) in &self.windows {
-                ShowWindow(*hwnd, SW_HIDE);
+            if let Some((hwnd, _)) = self.window {
+                ShowWindow(hwnd, SW_HIDE);
             }
-            if restore {
-                let target = self.last_foreground.get();
+            if restore && let Some((target, owner)) = self.target {
                 GetWindowThreadProcessId(target, &mut pid);
-                if restore_pid == Some(pid) {
+                if restore_pid == Some(owner)
+                    && pid == owner
+                    && IsWindowVisible(target) != 0
+                    && IsIconic(target) == 0
+                {
                     SetForegroundWindow(target);
                 }
             }
@@ -301,7 +353,7 @@ impl Desktop {
 impl Drop for Desktop {
     fn drop(&mut self) {
         unsafe {
-            for (hwnd, _) in self.windows.drain(..) {
+            if let Some((hwnd, _)) = self.window.take() {
                 DestroyWindow(hwnd);
             }
         }

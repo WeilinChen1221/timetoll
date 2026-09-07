@@ -4,6 +4,8 @@ use anyhow::Result;
 pub struct Foreground {
     pub app: String,
     pub pid: u32,
+    /// Native window ID, or zero when the app has no visible window.
+    pub window_id: u64,
 }
 
 #[cfg(target_os = "macos")]
@@ -30,7 +32,7 @@ impl Desktop {
     pub fn idle_seconds(&self) -> f64 {
         f64::INFINITY
     }
-    pub fn show(&mut self, _: &str, _: bool) -> Result<()> {
+    pub fn show(&mut self, _: &Foreground, _: &str, _: bool) -> Result<bool> {
         anyhow::bail!("unsupported desktop")
     }
     pub fn hide(&mut self, _: Option<u32>) {}

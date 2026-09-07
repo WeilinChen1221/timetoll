@@ -129,16 +129,18 @@ fn execute(cli: Cli) -> Result<()> {
         Command::Apps => platform::watch()?,
         Command::Preview { seconds } => {
             let mut desktop = Desktop::new()?;
-            let restore = desktop.foreground().map(|f| f.pid);
+            let target = desktop
+                .foreground()
+                .context("no foreground window to preview")?;
             let running = shutdown_handler()?;
             let start = Instant::now();
             while running.load(Ordering::Relaxed) && start.elapsed() < Duration::from_secs(seconds)
             {
-                desktop.show(&format!("TimeToll\n\nBlocking window preview\n\nThis closes automatically after {seconds} seconds."), false)?;
+                ensure!(desktop.show(&target, &format!("TimeToll\n\nBlocking window preview\n\nThis closes automatically after {seconds} seconds."), false)?, "the preview target has no visible window");
                 desktop.pump();
                 std::thread::sleep(Duration::from_millis(50));
             }
-            desktop.hide(restore);
+            desktop.hide(Some(target.pid));
         }
         Command::Status { json } => {
             let config = store.config()?;
@@ -367,8 +369,13 @@ fn run(store: &Store) -> Result<()> {
                     Activity::UnknownBrowser => "TimeToll\n\nWaiting for the browser extension\n\nPair the extension using timetoll pair.\nSwitch to another app to continue.".to_string(),
                     _ => format!("TimeToll\n\nAccess is locked\n\nUse an earning app or website for {} to earn {}.\nProgress: {}\n\nSwitch apps with Cmd+Tab or Alt+Tab.", time_text(config.ratio.earn_seconds * 1000), time_text(config.ratio.unlock_seconds * 1000), time_text(ledger.progress_ms)),
                 };
-                desktop.show(&message, is_browser)?;
-                overlay = true;
+                overlay = desktop.show(
+                    current
+                        .as_ref()
+                        .expect("blocked activity has a foreground target"),
+                    &message,
+                    is_browser,
+                )?;
             } else {
                 desktop.hide(current.as_ref().map(|f| f.pid));
                 overlay = false;
