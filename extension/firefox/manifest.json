@@ -1,13 +1,48 @@
 {
   "manifest_version": 2,
   "name": "TimeToll browser bridge",
-  "version": "0.1.0",
-  "description": "Report the active tab to the local TimeToll CLI.",
-  "permissions": ["tabs", "storage", "alarms", "http://127.0.0.1/*"],
-  "background": { "scripts": ["background.js"], "persistent": true },
-  "options_ui": { "page": "options.html", "open_in_tab": true },
-  "browser_action": { "default_title": "Configure TimeToll" },
+  "version": "0.2.0",
+  "description": "Block distracting page content while keeping browser navigation usable.",
+  "permissions": [
+    "tabs",
+    "storage",
+    "alarms",
+    "http://127.0.0.1/*",
+    "http://*/*",
+    "https://*/*",
+    "file:///*"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ],
+    "persistent": true
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "browser_action": {
+    "default_title": "Configure TimeToll"
+  },
   "browser_specific_settings": {
-    "gecko": { "id": "timetoll@timetoll.local", "strict_min_version": "109.0" }
-  }
+    "gecko": {
+      "id": "timetoll@timetoll.local",
+      "strict_min_version": "109.0"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*",
+        "file:///*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
 }

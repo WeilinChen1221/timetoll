@@ -2,9 +2,9 @@
 
 A Rust CLI for macOS and Windows that trades time in selected apps and websites for access to distracting ones.
 
-By default, 15 minutes in the earning group earns 10 minutes of access to the blocked group. Credit accumulates in one shared balance. TimeToll covers the active blocked window with a native topmost overlay when the balance is empty. The overlay follows that window's bounds in windowed and fullscreen modes.
+By default, 15 minutes in the earning group earns 10 minutes of access to the blocked group. Credit accumulates in one shared balance. TimeToll covers the blocked target's content when the balance is empty. Browser overlays live inside the tab viewport. Desktop app overlays leave the title bar and its window controls exposed.
 
-It runs in your desktop session without administrator access, Accessibility permission, Screen Recording permission, a VPN, or changes to the hosts file. Website tracking uses the included browser extension and its tab URL permission. App tracking works without the extension.
+It runs in your desktop session without administrator access, Accessibility permission, Screen Recording permission, a VPN, or changes to the hosts file. Website tracking and blocking use the included browser extension, with permission to read tab URLs and run its content overlay on websites. App tracking works without the extension.
 
 ## Build and start
 
@@ -54,7 +54,7 @@ Keep this command running. Switch back to the terminal and press Ctrl+C to stop.
 
 ## Browser extension
 
-Chrome, Thorium on macOS, Edge, Brave, Arc, Opera, Vivaldi, and Firefox are supported through the included extension. Safari URL tracking is not included. Safari can still be blocked as a whole app.
+Chrome, Thorium on macOS, Edge, Brave, Arc, Opera, Vivaldi, and Firefox are supported through the included extension. Safari URL tracking is not included. Safari is not supported for content-only blocking. Registered browsers always use their extension for blocking, so a native overlay cannot accidentally cover browser chrome.
 
 For Chromium browsers:
 
@@ -73,9 +73,11 @@ Use one browser profile per app identifier while monitoring. Multiple profiles o
 
 The extension reports the active tab in the browser's last focused normal window once per second. The Rust monitor uses the OS foreground app to decide whether that browser is being used. Background tabs and background apps do not earn or spend credit. Tab URLs stay in memory and are not written to the ledger or logs.
 
-If website blocking is configured and a known browser has no report newer than four seconds, TimeToll displays a connection overlay. This includes an unpaired browser, unsupported Safari, or a disconnected extension. The overlay stays until fresh reports arrive or you switch apps. It does not spend credit while the URL is unknown. Extension recovery after browser sleep or worker shutdown can take up to 30 seconds.
+Reload the extension after updating to version 0.2.0 and allow it to run on the sites you want to block. Reload already-open pages so they receive the content script. File URLs and private windows require their separate browser permissions. Browser-internal pages, built-in PDF viewers, and sites where the browser forbids extension scripts cannot receive the overlay. The options page reports a delivery error for a blocked tab it cannot reach. TimeToll never falls back to covering browser chrome.
 
-When a page is locked, click **Open a new browser tab** on the overlay to navigate to an earning or whitelisted page. The extension opens a tab in that browser window. You can also switch to another app with Cmd+Tab or Alt+Tab. The new-tab button requires a connected extension and cannot override a whole-browser app block.
+If a known browser has no recent report, the monitor logs that it is waiting for the extension and pauses website accounting. Existing tab overlays expire within five seconds without renewed decisions, including when the monitor stops. This lets normal shutdown restore page access. A disconnected or disabled extension therefore stops website enforcement. The background worker may take up to 30 seconds to recover after browser sleep.
+
+When a page is locked, use the browser normally to switch tabs, enter another address, open a bookmark, or close the window. The tab bar, address bar, bookmarks bar, browser sidebars, and window controls stay usable. The page beneath the overlay cannot receive pointer or keyboard input. An allowed page removes its overlay on the next decision. A whole-browser app rule still blocks its scriptable page content, including whitelisted pages.
 
 ## Rules and credit
 
@@ -109,21 +111,31 @@ timetoll doctor
 timetoll preview
 ```
 
-`doctor` checks configuration, state, and foreground app detection. `preview` covers the current foreground window for five seconds without changing credit. Use `preview --seconds 20` for a longer check. `config` redacts the token; `pair` intentionally displays it.
+`doctor` checks configuration, state, and foreground app detection. `preview` covers the content of the current foreground desktop app window for five seconds without changing credit. Use `preview --seconds 20` for a longer check. `config` redacts the token; `pair` intentionally displays it.
 
 `init` prints the configuration path. Use `--data-dir PATH` with any command to override it. Keep `config.toml` and `state.json` together. The token is private to that configuration; do not publish it or commit it to source control.
 
-The monitor reloads rules and the ratio within one second. Changes to the bridge port, token, or browser identifiers require a restart. Invalid edits keep the last valid rules and print an error. Writes use atomic replacement, and the monitor checkpoints progress every second, on rewards, at balance exhaustion, and on normal shutdown. Abrupt termination can lose or restore up to roughly one second of usage. A process lock prevents two monitors from using the same ledger. Corrupt state causes an error instead of silently discarding credit.
+The monitor reloads rules and the ratio within one second. Changes to the bridge port, token, or browser identifiers require a restart. Title-bar inset changes reload with the other rules. Invalid edits keep the last valid rules and print an error. Writes use atomic replacement, and the monitor checkpoints progress every second, on rewards, at balance exhaustion, and on normal shutdown. Abrupt termination can lose or restore up to roughly one second of usage. A process lock prevents two monitors from using the same ledger. Corrupt state causes an error instead of silently discarding credit.
 
 The browser listener binds only to `127.0.0.1`. It requires a pairing token, validates browser identifiers, rejects ordinary website origins, and grants no CORS access. The extension sends no data to an external server. This is a local focus tool; another process running as your user can still read its files or interfere with its operation.
 
 ## What window blocking can do
 
-TimeToll creates one opaque overlay over the active blocked app window. For a website rule, the overlay covers the browser window containing the active blocked tab, including its browser controls. Other windows and the rest of the desktop remain uncovered. Use the overlay's new-tab button to open an allowed page.
+Browser blocking uses a modal dialog in the document's top rendering layer. It fits the page viewport automatically during resizing, page zoom, and fullscreen transitions. It does not need to measure browser toolbars, bookmarks, vertical tabs, or docked developer tools. These areas belong to browser chrome and remain outside the overlay. The overlay is isolated from page styles in a closed shadow root. Repeated decisions update its text without repeatedly taking focus.
 
-The overlay tracks the same native window ID while it has focus and refreshes position and size every 250 milliseconds. Moving, resizing, maximizing, changing displays, and entering or leaving fullscreen update the overlay bounds. Closing, hiding, or minimizing the target removes the overlay once the OS finishes its window animation. If the window bounds cannot be obtained, TimeToll hides the overlay; it never substitutes a whole-screen overlay.
+Desktop apps use a native topmost overlay. On Windows, TimeToll maps the client rectangle into screen coordinates and excludes a visible native caption area if a custom frame extends into it. Per-monitor DPI awareness keeps this aligned across differently scaled displays. On macOS, foreign window metadata provides the outer frame but not an arbitrary app's content layout. TimeToll reserves the standard AppKit title-bar height without requesting Accessibility access. It retains this strip in fullscreen so hidden title-bar controls can be revealed.
 
-On macOS it reads window geometry through Core Graphics and positions an AppKit window across Spaces. It does not read window titles or capture screen images. On Windows it uses DWM visible frame bounds with per-monitor DPI awareness, falling back to the native window rectangle if DWM cannot supply bounds. Both platforms request keyboard focus. Switching to an allowed app or page hides the overlay. It absorbs pointer input over covered content and keyboard input when the OS gives it focus.
+For a desktop app that draws a taller custom title bar, set its total top inset from the outer window edge in `config.toml`. Values are logical pixels on Windows and points on macOS; Windows scales them for the target display. This is needed when the app's controls fall outside the standard system title-bar area. For example:
+
+```toml
+[titlebar_insets]
+"com.microsoft.VSCode" = 38
+"custom-editor.exe" = 48
+```
+
+Choose the actual title-bar height for the app and its theme. These values are examples, not measurements of every app version. Insets apply to native desktop app overlays, not browser overlays. The default is the system title-bar/client-area calculation; custom macOS title bars cannot be measured exactly without Accessibility access or an explicit inset.
+
+Native overlays track the same window ID while focused and refresh position and size every 250 milliseconds. Moving, resizing, maximizing, and changing displays update their content bounds. Closing, hiding, or minimizing the target removes the overlay after the OS window animation. Missing or empty content bounds hide it; there is no whole-window or whole-screen fallback. The overlay takes focus when first shown, then leaves focus alone when you use the exposed title bar. Clicking the overlay focuses it again. Window controls remain visible and usable, including close, minimize, and maximize/restore.
 
 A regular desktop window cannot enforce a tamper-proof restriction. You can quit TimeToll, edit its files, disable its extension, use an unconfigured browser, or use OS escape controls. Windows may refuse foreground activation; clicking the overlay gives it keyboard focus. Secure desktops, elevated applications, exclusive fullscreen games, and other topmost windows can defeat or cover an overlay. Polling also means a newly selected page may appear briefly before the overlay. Background audio, downloads, and network requests continue.
 
@@ -136,15 +148,18 @@ cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 node --test extension/background.test.cjs
+npm ci
+npx playwright install chromium
+npm run test:browser
 ```
 
 The GitHub Actions workflow checks macOS, Windows, and Linux, then uploads native macOS and Windows binaries with the extension directories. Linux can run the policy tests and configuration commands; desktop monitoring supports macOS and Windows only.
 
 Edit the extension implementation in `extension/chromium`, then run `sh extension/sync.sh` to copy the shared files into `extension/firefox`. The test suite checks that the copies agree.
 
-For a desktop acceptance test, use a separate `--data-dir`, set a short ratio such as 5 earning seconds to 3 unlock seconds, and configure a harmless earning app and blocked app. Verify earning, spending, idle behavior, focus switching, monitor sleep, and moving the target between displays. Repeat with a blocked domain and a whitelisted path. Check the new-tab button, an extension disconnect, restart persistence, and rule reload. Windows desktop behavior needs testing on a Windows machine; a cross-target build check cannot verify focus or rendering.
+For a desktop acceptance test, use a separate `--data-dir`, set a short ratio such as 5 earning seconds to 3 unlock seconds, and configure a harmless earning app and blocked app. Verify earning, spending, idle behavior, focus switching, monitor sleep, and moving the target between displays. Repeat with a blocked domain and a whitelisted path. Check tabs, the address bar, bookmarks, browser sidebars, title-bar controls, an extension disconnect, restart persistence, and rule reload. Windows desktop behavior needs testing on a Windows machine; a cross-target build check cannot verify focus or rendering.
 
-The macOS geometry regression test creates its own temporary windows and checks movement, resizing, fullscreen transitions, minimizing, closing, and coordinate conversion for displays around the primary screen. Run it in a logged-in desktop session:
+The macOS geometry regression test creates its own temporary windows and checks title-bar exclusion, focus preservation, custom insets, movement, resizing, fullscreen transitions, minimizing, closing, and coordinate conversion for displays around the primary screen. Run it in a logged-in desktop session:
 
 ```sh
 mkdir -p target

@@ -79,6 +79,9 @@ pub struct Config {
     pub blocked: Vec<Target>,
     pub earning: Vec<Target>,
     pub whitelist: Vec<String>,
+    /// Total top inset from the outer window edge, in logical pixels/points.
+    #[serde(default)]
+    pub titlebar_insets: std::collections::BTreeMap<String, u16>,
 }
 
 impl Default for Config {
@@ -113,6 +116,7 @@ impl Default for Config {
             blocked: vec![],
             earning: vec![],
             whitelist: vec![],
+            titlebar_insets: Default::default(),
         }
     }
 }
@@ -147,6 +151,13 @@ impl Config {
         }
         for rule in &self.whitelist {
             SiteRule::parse(rule)?;
+        }
+        for (app, height) in &self.titlebar_insets {
+            Target::App(app.clone()).validate()?;
+            ensure!(
+                *height <= 512,
+                "titlebar insets must be 0 to 512 logical pixels"
+            );
         }
         Ok(())
     }

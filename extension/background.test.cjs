@@ -16,7 +16,8 @@ function harness(overrides = {}) {
         update: async (...args) => calls.push(["focus", ...args]), onFocusChanged: event(),
       },
       tabs: {
-        query: async () => [{ url: "https://example.com/learn", ...overrides.tab }],
+        query: async () => [{ id: 42, url: "https://example.com/learn", ...overrides.tab }],
+        sendMessage: async (...args) => calls.push(["content", ...args]),
         create: async (...args) => calls.push(["new_tab", ...args]),
         onActivated: event(), onUpdated: event(),
       },
@@ -25,7 +26,7 @@ function harness(overrides = {}) {
     },
     fetch: async (url, options) => {
       calls.push(["request", url, options]);
-      return { ok: true, json: async () => ({ new_tab: !!overrides.newTab }) };
+      return { ok: true, json: async () => ({ new_tab: !!overrides.newTab, content: overrides.decision }) };
     },
   };
   vm.createContext(context);
@@ -71,7 +72,23 @@ test("does not report an unpaired browser", async () => {
 });
 
 test("Chromium and Firefox ship the same implementation", () => {
-  for (const file of ["background.js", "options.js", "options.html"]) {
+  for (const file of ["background.js", "content.js", "options.js", "options.html"]) {
     assert.equal(fs.readFileSync(`${__dirname}/chromium/${file}`, "utf8"), fs.readFileSync(`${__dirname}/firefox/${file}`, "utf8"));
   }
+});
+
+test("delivers content-only decisions to the reported tab's top frame", async () => {
+  const { calls } = harness({ decision: { blocked: true, message: "Earn access" } });
+  await new Promise(setImmediate);
+  assert.equal(calls[1][0], "content");
+  assert.equal(calls[1][1], 42);
+  assert.equal(calls[1][2].blocked, true);
+  assert.equal(calls[1][2].url, "https://example.com/learn");
+  assert.equal(calls[1][3].frameId, 0);
+});
+
+test("sends an explicit release when the tab is allowed", async () => {
+  const { calls } = harness({ decision: { blocked: false, message: "" } });
+  await new Promise(setImmediate);
+  assert.equal(calls[1][2].blocked, false);
 });

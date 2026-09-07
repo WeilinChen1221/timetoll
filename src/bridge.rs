@@ -1,5 +1,6 @@
+use crate::engine::{Ledger, Policy};
 use anyhow::{Context, Result, ensure};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     io::Read,
@@ -23,9 +24,43 @@ pub struct Report {
 pub struct BrowserState {
     reports: HashMap<String, (String, Instant)>,
     new_tab: Option<(String, Instant)>,
+    decision: Option<(Policy, Ledger, Instant)>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ContentDecision {
+    pub blocked: bool,
+    pub message: String,
 }
 
 impl BrowserState {
+    pub fn set_policy(&mut self, policy: &Policy, ledger: &Ledger) {
+        self.decision = Some((policy.clone(), ledger.clone(), Instant::now()));
+    }
+
+    pub fn content_decision(&self, app: &str, url: &str) -> ContentDecision {
+        let Some((policy, ledger, time)) = &self.decision else {
+            return ContentDecision {
+                blocked: false,
+                message: String::new(),
+            };
+        };
+        let blocked = time.elapsed() < Duration::from_secs(4)
+            && ledger.blocked(&policy.classify(app, Some(url)));
+        ContentDecision {
+            blocked,
+            message: if blocked {
+                format!(
+                    "Access is locked. Use an earning app or website for {} seconds to earn {} seconds of access. Progress: {} seconds. You can use the tabs, address bar, or bookmarks to go elsewhere.",
+                    ledger.ratio.earn_seconds,
+                    ledger.ratio.unlock_seconds,
+                    ledger.progress_ms / 1000
+                )
+            } else {
+                String::new()
+            },
+        }
+    }
     pub fn url(&self, app: &str) -> Option<&str> {
         self.reports
             .get(&app.to_lowercase())
@@ -110,8 +145,10 @@ pub fn start(
                             .and_then(|_| parse_report(&bytes, &browsers));
                         match result {
                             Ok(report) => {
-                                let new_tab = shared.lock().unwrap().update(report);
-                                (200, format!("{{\"ok\":true,\"new_tab\":{new_tab}}}"))
+                                let mut state = shared.lock().unwrap();
+                                let content = state.content_decision(&report.app, &report.url);
+                                let new_tab = state.update(report);
+                                (200, serde_json::json!({"ok": true, "new_tab": new_tab, "content": content}).to_string())
                             }
                             Err(_) => (400, "{\"error\":\"invalid report\"}".to_string()),
                         }

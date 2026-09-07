@@ -7,7 +7,13 @@ unsafe extern "C" {
     fn tt_pump();
     fn tt_foreground(buffer: *mut c_char, size: usize, pid: *mut u32, window_id: *mut u64) -> bool;
     fn tt_idle_seconds() -> f64;
-    fn tt_show(window_id: u64, pid: u32, message: *const c_char, browser: bool) -> bool;
+    fn tt_show(
+        window_id: u64,
+        pid: u32,
+        message: *const c_char,
+        browser: bool,
+        top_inset: i32,
+    ) -> bool;
     fn tt_hide(restore_pid: u32);
     fn tt_take_new_tab() -> bool;
 }
@@ -49,9 +55,23 @@ impl Desktop {
     pub fn idle_seconds(&self) -> f64 {
         unsafe { tt_idle_seconds() }
     }
-    pub fn show(&mut self, target: &Foreground, message: &str, browser: bool) -> Result<bool> {
+    pub fn show(
+        &mut self,
+        target: &Foreground,
+        message: &str,
+        browser: bool,
+        top_inset: Option<u16>,
+    ) -> Result<bool> {
         let message = CString::new(message.replace('\0', "")).unwrap();
-        Ok(unsafe { tt_show(target.window_id, target.pid, message.as_ptr(), browser) })
+        Ok(unsafe {
+            tt_show(
+                target.window_id,
+                target.pid,
+                message.as_ptr(),
+                browser,
+                top_inset.map(i32::from).unwrap_or(-1),
+            )
+        })
     }
     pub fn hide(&mut self, restore_pid: Option<u32>) {
         unsafe { tt_hide(restore_pid.unwrap_or(0)) }

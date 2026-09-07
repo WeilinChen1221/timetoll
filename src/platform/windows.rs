@@ -94,7 +94,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, w: WPARAM, l: LP
 
 // DWM bounds exclude invisible resize borders and are physical pixels. The
 // per-monitor DPI context keeps SetWindowPos in the same coordinate system.
-unsafe fn target_bounds(target: &Foreground) -> Option<RECT> {
+unsafe fn target_bounds(target: &Foreground, top_inset: Option<u16>) -> Option<RECT> {
     unsafe {
         let hwnd = target.window_id as usize as HWND;
         let mut pid = 0;
@@ -127,6 +127,44 @@ unsafe fn target_bounds(target: &Foreground) -> Option<RECT> {
         {
             return None;
         }
+        let outer = rect;
+        let mut client: RECT = std::mem::zeroed();
+        if GetClientRect(hwnd, &mut client) == 0 {
+            return None;
+        }
+        let mut origin = POINT {
+            x: client.left,
+            y: client.top,
+        };
+        if ClientToScreen(hwnd, &mut origin) == 0 {
+            return None;
+        }
+        rect = RECT {
+            left: origin.x,
+            top: origin.y,
+            right: origin.x + client.right - client.left,
+            bottom: origin.y + client.bottom - client.top,
+        };
+        if let Some(inset) = top_inset {
+            let dpi = GetDpiForWindow(hwnd).max(96);
+            rect.top = rect
+                .top
+                .max(outer.top + (u32::from(inset) * dpi).div_ceil(96) as i32);
+        } else {
+            // Some custom frames extend their client area behind caption buttons.
+            let mut title: TITLEBARINFO = std::mem::zeroed();
+            title.cbSize = size_of::<TITLEBARINFO>() as u32;
+            if GetTitleBarInfo(hwnd, &mut title) != 0
+                && title.rgstate[0] & 0x8000 == 0
+                && title.rcTitleBar.bottom > title.rcTitleBar.top
+            {
+                rect.top = rect.top.max(title.rcTitleBar.bottom);
+            }
+        }
+        rect.left = rect.left.max(outer.left);
+        rect.top = rect.top.max(outer.top);
+        rect.right = rect.right.min(outer.right);
+        rect.bottom = rect.bottom.min(outer.bottom);
         (rect.right > rect.left && rect.bottom > rect.top).then_some(rect)
     }
 }
@@ -228,9 +266,15 @@ impl Desktop {
         }
     }
 
-    pub fn show(&mut self, target: &Foreground, message: &str, browser: bool) -> Result<bool> {
+    pub fn show(
+        &mut self,
+        target: &Foreground,
+        message: &str,
+        browser: bool,
+        top_inset: Option<u16>,
+    ) -> Result<bool> {
         unsafe {
-            let Some(rect) = target_bounds(target) else {
+            let Some(rect) = target_bounds(target, top_inset) else {
                 self.hide(None);
                 return Ok(false);
             };
@@ -308,7 +352,8 @@ impl Desktop {
             );
             ShowWindow(button, if browser { SW_SHOWNA } else { SW_HIDE });
             InvalidateRect(hwnd, null(), 1);
-            if GetForegroundWindow() != hwnd {
+            if !self.visible || self.target != Some((target.window_id as usize as HWND, target.pid))
+            {
                 // Windows may refuse activation. Clicking the overlay gives it
                 // keyboard focus; its bounds still cover only the target.
                 SetForegroundWindow(hwnd);

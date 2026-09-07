@@ -132,11 +132,28 @@ fn execute(cli: Cli) -> Result<()> {
             let target = desktop
                 .foreground()
                 .context("no foreground window to preview")?;
+            let preview_config = if store.dir.join("config.toml").exists() {
+                store.config()?
+            } else {
+                Config::default()
+            };
+            ensure!(
+                !preview_config
+                    .browsers
+                    .iter()
+                    .any(|app| app.eq_ignore_ascii_case(&target.app)),
+                "browser overlays run inside tabs; use timetoll run with the updated browser extension to preview them"
+            );
+            let inset = preview_config
+                .titlebar_insets
+                .iter()
+                .find(|(app, _)| app.eq_ignore_ascii_case(&target.app))
+                .map(|(_, height)| *height);
             let running = shutdown_handler()?;
             let start = Instant::now();
             while running.load(Ordering::Relaxed) && start.elapsed() < Duration::from_secs(seconds)
             {
-                ensure!(desktop.show(&target, &format!("TimeToll\n\nBlocking window preview\n\nThis closes automatically after {seconds} seconds."), false)?, "the preview target has no visible window");
+                ensure!(desktop.show(&target, &format!("TimeToll\n\nBlocking window preview\n\nThis closes automatically after {seconds} seconds."), false, inset)?, "the preview target has no visible content area");
                 desktop.pump();
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -271,6 +288,7 @@ fn run(store: &Store) -> Result<()> {
         config.browsers.clone(),
         running.clone(),
     )?;
+    browser.lock().unwrap().set_policy(&policy, &ledger);
     let mut last_foreground: Option<Foreground> = None;
     let mut previous = Activity::Neutral;
     let mut previous_active = false;
@@ -358,13 +376,16 @@ fn run(store: &Store) -> Result<()> {
                 active && previous_active,
             );
             let blocked = ledger.blocked(&activity);
-            if blocked {
-                let is_browser = current.as_ref().is_some_and(|front| {
-                    config
-                        .browsers
-                        .iter()
-                        .any(|b| b.eq_ignore_ascii_case(&front.app))
-                });
+            browser.lock().unwrap().set_policy(&policy, &ledger);
+            let is_browser = current.as_ref().is_some_and(|front| {
+                config
+                    .browsers
+                    .iter()
+                    .any(|b| b.eq_ignore_ascii_case(&front.app))
+            });
+            // Browser decisions go to the extension's tab-local overlay. Never
+            // cover browser chrome, even when reports are missing or stale.
+            if blocked && !is_browser {
                 let message = match &activity {
                     Activity::UnknownBrowser => "TimeToll\n\nWaiting for the browser extension\n\nPair the extension using timetoll pair.\nSwitch to another app to continue.".to_string(),
                     _ => format!("TimeToll\n\nAccess is locked\n\nUse an earning app or website for {} to earn {}.\nProgress: {}\n\nSwitch apps with Cmd+Tab or Alt+Tab.", time_text(config.ratio.earn_seconds * 1000), time_text(config.ratio.unlock_seconds * 1000), time_text(ledger.progress_ms)),
@@ -374,7 +395,14 @@ fn run(store: &Store) -> Result<()> {
                         .as_ref()
                         .expect("blocked activity has a foreground target"),
                     &message,
-                    is_browser,
+                    false,
+                    current.as_ref().and_then(|front| {
+                        config
+                            .titlebar_insets
+                            .iter()
+                            .find(|(app, _)| app.eq_ignore_ascii_case(&front.app))
+                            .map(|(_, height)| *height)
+                    }),
                 )?;
             } else {
                 desktop.hide(current.as_ref().map(|f| f.pid));

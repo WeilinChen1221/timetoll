@@ -34,6 +34,20 @@ async function heartbeat() {
     if (!response.ok) throw new Error(`Bridge returned ${response.status}. Check the token and app identifier.`);
     const result = await response.json();
     lastError = "Connected";
+    if (result.content && tab.id !== undefined) {
+      // A navigation may finish while the request is in flight. The content
+      // script checks the document URL before applying this decision.
+      try {
+        await api.tabs.sendMessage(tab.id, {
+          type: "content-decision", url, blocked: result.content.blocked,
+          message: result.content.message,
+        }, { frameId: 0 });
+      } catch {
+        if (result.content.blocked) {
+          lastError = "This tab cannot receive the content overlay. Reload the tab or check extension site access.";
+        }
+      }
+    }
     if (result.new_tab) {
       await api.tabs.create({ windowId: window.id, active: true });
       await api.windows.update(window.id, { focused: true });
@@ -58,7 +72,12 @@ api.runtime.onInstalled.addListener(() => {
 });
 api.alarms.onAlarm.addListener(heartbeat);
 (api.action ?? api.browserAction).onClicked.addListener(() => api.runtime.openOptionsPage());
-api.runtime.onMessage.addListener((message, _sender, reply) => {
+api.runtime.onMessage.addListener((message, sender, reply) => {
+  if (message.type === "content-ready" && sender.frameId === 0 && sender.tab?.active) {
+    heartbeat();
+    reply({ ok: true });
+    return false;
+  }
   if (message.type === "status") {
     heartbeat().then(() => reply({ status: lastError }));
     return true;

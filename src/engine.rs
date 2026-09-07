@@ -10,6 +10,7 @@ pub enum Activity {
     UnknownBrowser,
 }
 
+#[derive(Clone)]
 pub struct Policy {
     blocked_apps: Vec<String>,
     earning_apps: Vec<String>,

@@ -1,0 +1,11 @@
+{
+  "name": "timetoll-extension-tests",
+  "private": true,
+  "scripts": {
+    "test:extension": "node --test extension/background.test.cjs",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
+  }
+}

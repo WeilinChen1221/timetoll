@@ -32,7 +32,7 @@ impl Desktop {
     pub fn idle_seconds(&self) -> f64 {
         f64::INFINITY
     }
-    pub fn show(&mut self, _: &Foreground, _: &str, _: bool) -> Result<bool> {
+    pub fn show(&mut self, _: &Foreground, _: &str, _: bool, _: Option<u16>) -> Result<bool> {
         anyhow::bail!("unsupported desktop")
     }
     pub fn hide(&mut self, _: Option<u32>) {}

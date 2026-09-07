@@ -15,6 +15,7 @@ static NSTextField *label;
 static NSButton *button;
 static bool newTab = false;
 static bool visible = false;
+static uint64_t overlayTarget = 0;
 
 
 @interface TollActions : NSObject
@@ -104,6 +105,20 @@ static bool targetFrame(uint64_t window_id, uint32_t pid, NSRect *frame) {
     return false;
 }
 
+// Foreign NSWindow instances are not accessible across processes. Standard
+// frames use AppKit's title-bar metric; custom frames can supply a top inset.
+static NSRect contentFrame(NSRect frame, uint64_t window_id, uint32_t pid, int32_t top_inset) {
+    if (top_inset >= 0) {
+        frame.size.height = MAX(0, frame.size.height - top_inset);
+        return frame;
+    }
+    if (pid == (uint32_t)getpid()) {
+        NSWindow *window = [NSApp windowWithWindowNumber:(NSInteger)window_id];
+        if (window) return [window convertRectToScreen:window.contentLayoutRect];
+    }
+    return [NSWindow contentRectForFrameRect:frame styleMask:NSWindowStyleMaskTitled];
+}
+
 double tt_idle_seconds(void) {
     return CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType);
 }
@@ -128,13 +143,15 @@ static void createOverlay(void) {
 
 void tt_hide(uint32_t restore_pid);
 
-bool tt_show(uint64_t window_id, uint32_t pid, const char *message, bool browser) {
+bool tt_show(uint64_t window_id, uint32_t pid, const char *message, bool browser, int32_t top_inset) {
     @autoreleasepool {
         NSRect frame;
         if (!targetFrame(window_id, pid, &frame)) {
             tt_hide(0);
             return false;
         }
+        frame = contentFrame(frame, window_id, pid, top_inset);
+        if (frame.size.width <= 0 || frame.size.height <= 0) { tt_hide(0); return false; }
         if (!overlay) createOverlay();
         [overlay setFrame:frame display:YES];
         // Fit the controls to small windows as well as fullscreen windows.
@@ -155,11 +172,14 @@ bool tt_show(uint64_t window_id, uint32_t pid, const char *message, bool browser
         button.frame = NSMakeRect((width - buttonWidth) / 2, MAX(padding, textBottom - reserved), buttonWidth, buttonHeight);
         button.hidden = !browser;
         [overlay orderFrontRegardless];
-        if (!visible || NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != getpid()) {
+        // Take focus once. Clicking the exposed title bar must not start a
+        // focus fight with the overlay on the next monitor tick.
+        if (!visible || overlayTarget != window_id) {
             [NSApp activateIgnoringOtherApps:YES];
             [overlay makeKeyAndOrderFront:nil];
         }
         visible = true;
+        overlayTarget = window_id;
         return true;
     }
 }

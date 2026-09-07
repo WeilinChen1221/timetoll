@@ -13,13 +13,21 @@ static void settle(double seconds) {
 
 static void checkOverlay(NSWindow *target, bool browser) {
     settle(0.5);
-    assert(tt_show(target.windowNumber, getpid(), "TimeToll\n\nWindow bounds test", browser));
+    assert(tt_show(target.windowNumber, getpid(), "TimeToll\n\nWindow bounds test", browser, -1));
     settle(0.1);
     NSRect expected;
     assert(targetFrame(target.windowNumber, getpid(), &expected));
+    expected = [target convertRectToScreen:target.contentLayoutRect];
     if (!NSEqualRects(overlay.frame, expected)) NSLog(@"Geometry mismatch: overlay=%@ expected=%@ target=%@", NSStringFromRect(overlay.frame), NSStringFromRect(expected), NSStringFromRect(target.frame));
     assert(NSEqualRects(overlay.frame, expected));
     assert(overlay.isVisible);
+    if (!(target.styleMask & NSWindowStyleMaskFullScreen)) {
+        for (NSNumber *kind in @[@(NSWindowCloseButton), @(NSWindowMiniaturizeButton), @(NSWindowZoomButton)]) {
+            NSButton *control = [target standardWindowButton:kind.unsignedIntegerValue];
+            NSRect controlFrame = [target convertRectToScreen:[control convertRect:control.bounds toView:nil]];
+            assert(!NSIntersectsRect(overlay.frame, controlFrame));
+        }
+    }
     assert(NSContainsRect(overlay.contentView.bounds, label.frame));
     if (browser) assert(NSContainsRect(overlay.contentView.bounds, button.frame));
 }
@@ -53,6 +61,16 @@ int main(int argc, const char **argv) {
         assert(owner == getpid() && foregroundWindow == target.windowNumber);
         checkOverlay(target, true);
         assert(!NSEqualRects(overlay.frame, other.frame));
+        // A title-bar click activates the app. Repositioning must preserve it.
+        [target makeKeyAndOrderFront:nil];
+        settle(0.1);
+        assert(target.isKeyWindow);
+        checkOverlay(target, true);
+        assert(target.isKeyWindow);
+        // Custom frame configuration reserves the exact configured top strip.
+        assert(tt_show(target.windowNumber, getpid(), "custom title bar", false, 60));
+        assert(fabs(NSMaxY(overlay.frame) - (NSMaxY(target.frame) - 60)) < 1);
+        checkOverlay(target, true);
         [target setFrame:NSMakeRect(area.origin.x + 120, area.origin.y + 120, 320, 220) display:YES];
         checkOverlay(target, true);
         [target setFrame:NSScreen.mainScreen.frame display:YES];
@@ -75,22 +93,22 @@ int main(int argc, const char **argv) {
         uint64_t identifier = target.windowNumber;
         [target orderOut:nil];
         settle(0.5);
-        assert(!tt_show(identifier, getpid(), "hidden", false));
+        assert(!tt_show(identifier, getpid(), "hidden", false, -1));
         assert(!overlay.isVisible);
         [target orderFrontRegardless];
         checkOverlay(target, true);
         [target miniaturize:nil];
         settle(0.5);
-        assert(!tt_show(identifier, getpid(), "minimized", false));
+        assert(!tt_show(identifier, getpid(), "minimized", false, -1));
         assert(!overlay.isVisible);
         [target deminiaturize:nil];
         settle(0.5);
         checkOverlay(target, true);
         [target close];
         settle(0.5);
-        assert(!tt_show(identifier, getpid(), "closed", false));
+        assert(!tt_show(identifier, getpid(), "closed", false, -1));
         assert(!overlay.isVisible);
-        assert(!tt_show(other.windowNumber, getpid() + 1, "wrong owner", false));
+        assert(!tt_show(other.windowNumber, getpid() + 1, "wrong owner", false, -1));
         [other close];
         puts("PASS: window identity, movement, resize, screen-sized bounds, hiding, minimization, closure, and coordinate conversion");
     }
