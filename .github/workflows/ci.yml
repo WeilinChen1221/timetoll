@@ -19,6 +19,12 @@ jobs:
         with:
           node-version: '22'
       - run: node --test extension/background.test.cjs
+      - run: npm ci
+        if: runner.os == 'Linux'
+      - run: npx playwright install --with-deps chromium
+        if: runner.os == 'Linux'
+      - run: npm run test:browser
+        if: runner.os == 'Linux'
       - run: cargo build --release --locked
       - uses: actions/upload-artifact@v4
         if: runner.os != 'Linux'
