@@ -165,7 +165,7 @@ fn execute(cli: Cli) -> Result<()> {
         Command::Pair => {
             let config = store.config()?;
             println!(
-                "Set these values in the TimeToll browser extension options:\n\nBridge URL: http://127.0.0.1:{}\nToken: {}\n\nUse `timetoll apps` to find the browser's app identifier.\nLoad extension/chromium for Chrome, Edge, Brave, Arc, Opera or Vivaldi.\nSee README.md for Firefox installation.",
+                "Set these values in the TimeToll browser extension options:\n\nBridge URL: http://127.0.0.1:{}\nToken: {}\n\nUse `timetoll apps` to find the browser's app identifier.\nLoad extension/chromium for Chrome, Thorium, Edge, Brave, Arc, Opera or Vivaldi.\nThorium on macOS uses org.chromium.Thorium.\nSee README.md for Firefox installation.",
                 config.bridge_port, config.bridge_token
             );
         }

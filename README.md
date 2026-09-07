@@ -54,7 +54,7 @@ Keep this command running. Switch back to the terminal and press Ctrl+C to stop.
 
 ## Browser extension
 
-Chrome, Edge, Brave, Arc, Opera, Vivaldi, and Firefox are supported through the included extension. Safari URL tracking is not included. Safari can still be blocked as a whole app.
+Chrome, Thorium on macOS, Edge, Brave, Arc, Opera, Vivaldi, and Firefox are supported through the included extension. Safari URL tracking is not included. Safari can still be blocked as a whole app.
 
 For Chromium browsers:
 
@@ -64,6 +64,8 @@ For Chromium browsers:
 4. Run `timetoll pair` and open the extension's options by clicking its toolbar icon.
 5. Enter the printed URL and token. Set the browser's app identifier from `timetoll apps`.
 6. Start `timetoll run`, then click **Save and test connection**. The status should say `Connected`.
+
+For Thorium on macOS, set the extension's app identifier to `org.chromium.Thorium`, replacing the suggested Chrome identifier. If your configuration was created before Thorium support, add `org.chromium.Thorium` to the `browsers` list in `config.toml` and restart `timetoll run`.
 
 For Firefox, open `about:debugging#/runtime/this-firefox`, select **Load Temporary Add-on**, and select `extension/firefox/manifest.json`. Configure its options the same way. Firefox removes temporary add-ons when it restarts. A permanent release requires Mozilla signing; this repository does not include a signed extension.
 

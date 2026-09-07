@@ -91,6 +91,7 @@ impl Default for Config {
             bridge_token: uuid::Uuid::new_v4().simple().to_string(),
             browsers: [
                 "com.google.Chrome",
+                "org.chromium.Thorium",
                 "com.microsoft.edgemac",
                 "org.mozilla.firefox",
                 "com.brave.Browser",
