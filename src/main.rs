@@ -50,7 +50,7 @@ enum Command {
         #[command(subcommand)]
         action: TargetAction,
     },
-    /// Add or remove a website exception to website blocking
+    /// List, add, or remove website exceptions to website blocking
     Whitelist {
         #[command(subcommand)]
         action: SiteAction,
@@ -107,8 +107,14 @@ enum TargetAction {
 
 #[derive(Subcommand)]
 enum SiteAction {
-    Add { value: String },
-    Remove { value: String },
+    /// List all whitelisted sites, one per line
+    Ls,
+    Add {
+        value: String,
+    },
+    Remove {
+        value: String,
+    },
 }
 
 fn main() {
@@ -181,6 +187,13 @@ fn execute(cli: Cli) -> Result<()> {
             config.bridge_token = "<redacted; use timetoll pair>".into();
             println!("{}", toml::to_string_pretty(&config)?);
         }
+        Command::Whitelist {
+            action: SiteAction::Ls,
+        } => {
+            for site in store.config()?.whitelist {
+                println!("{site}");
+            }
+        }
         Command::Pair => {
             let config = store.config()?;
             println!(
@@ -214,6 +227,7 @@ fn execute(cli: Cli) -> Result<()> {
                 Command::Block { action } => change_target(&mut config.blocked, action)?,
                 Command::Earn { action } => change_target(&mut config.earning, action)?,
                 Command::Whitelist { action } => match action {
+                    SiteAction::Ls => unreachable!(),
                     SiteAction::Add { value } => {
                         timetoll::config::SiteRule::parse(&value)?;
                         if !config.whitelist.contains(&value) {

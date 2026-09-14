@@ -106,12 +106,15 @@ timetoll status --json
 timetoll config
 timetoll block remove site reddit.com
 timetoll earn remove app Code.exe
+timetoll whitelist ls
 timetoll whitelist remove 'https://example.com/learn/*'
 timetoll doctor
 timetoll preview
 ```
 
 `doctor` checks configuration, state, and foreground app detection. `preview` covers the content of the current foreground desktop app window for five seconds without changing credit. Use `preview --seconds 20` for a longer check. `config` redacts the token; `pair` intentionally displays it.
+
+`whitelist ls` prints all saved whitelist site rules, one per line, in configuration order. It prints nothing when the whitelist is empty.
 
 `init` prints the configuration path. Use `--data-dir PATH` with any command to override it. Keep `config.toml` and `state.json` together. The token is private to that configuration; do not publish it or commit it to source control.
 
