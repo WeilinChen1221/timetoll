@@ -10,7 +10,7 @@ use std::{
 };
 use timetoll::{
     bridge,
-    config::{Config, Ratio, parse_target},
+    config::{Config, Ratio, Target, parse_target},
     engine::{Activity, Policy, account_interval},
     platform::{self, Desktop, Foreground},
     storage::Store,
@@ -40,12 +40,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Add or remove a target in the blocked group
+    /// List, add, or remove targets in the blocked group
     Block {
         #[command(subcommand)]
         action: TargetAction,
     },
-    /// Add or remove a target in the earning group
+    /// List, add, or remove targets in the earning group
     Earn {
         #[command(subcommand)]
         action: TargetAction,
@@ -93,6 +93,8 @@ impl Kind {
 
 #[derive(Subcommand)]
 enum TargetAction {
+    /// List all targets as app or site followed by the value, one per line
+    Ls,
     Add {
         #[arg(value_enum)]
         kind: Kind,
@@ -187,6 +189,12 @@ fn execute(cli: Cli) -> Result<()> {
             config.bridge_token = "<redacted; use timetoll pair>".into();
             println!("{}", toml::to_string_pretty(&config)?);
         }
+        Command::Block {
+            action: TargetAction::Ls,
+        } => list_targets(&store.config()?.blocked),
+        Command::Earn {
+            action: TargetAction::Ls,
+        } => list_targets(&store.config()?.earning),
         Command::Whitelist {
             action: SiteAction::Ls,
         } => {
@@ -259,8 +267,18 @@ fn execute(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-fn change_target(targets: &mut Vec<timetoll::config::Target>, action: TargetAction) -> Result<()> {
+fn list_targets(targets: &[Target]) {
+    for target in targets {
+        match target {
+            Target::App(value) => println!("app {value}"),
+            Target::Site(value) => println!("site {value}"),
+        }
+    }
+}
+
+fn change_target(targets: &mut Vec<Target>, action: TargetAction) -> Result<()> {
     match action {
+        TargetAction::Ls => unreachable!(),
         TargetAction::Add { kind, value } => {
             let target = parse_target(kind.as_str(), value)?;
             if !targets.contains(&target) {

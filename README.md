@@ -104,7 +104,9 @@ Usage stops counting after 60 seconds without keyboard or mouse input. Reading w
 timetoll status
 timetoll status --json
 timetoll config
+timetoll block ls
 timetoll block remove site reddit.com
+timetoll earn ls
 timetoll earn remove app Code.exe
 timetoll whitelist ls
 timetoll whitelist remove 'https://example.com/learn/*'
@@ -113,6 +115,8 @@ timetoll preview
 ```
 
 `doctor` checks configuration, state, and foreground app detection. `preview` covers the content of the current foreground desktop app window for five seconds without changing credit. Use `preview --seconds 20` for a longer check. `config` redacts the token; `pair` intentionally displays it.
+
+`block ls` and `earn ls` print the saved targets in their respective groups, one per line, in configuration order. Each line contains the target kind and value, such as `app Code.exe` or `site reddit.com`. They print nothing when the group is empty.
 
 `whitelist ls` prints all saved whitelist site rules, one per line, in configuration order. It prints nothing when the whitelist is empty.
 
