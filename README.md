@@ -102,6 +102,7 @@ Usage stops counting after 60 seconds without keyboard or mouse input. Reading w
 
 ```sh
 timetoll status
+timetoll status --watch
 timetoll status --json
 timetoll config
 timetoll block ls
@@ -113,6 +114,8 @@ timetoll whitelist remove 'https://example.com/learn/*'
 timetoll doctor
 timetoll preview
 ```
+
+`status --watch` displays banked access, earning progress, and the current ratio, refreshing every second until Ctrl+C. Run it in another terminal while `timetoll run` monitors usage. It reads saved state without earning or spending credit, and reloads configuration changes on each refresh. In a terminal, it redraws in place and restores the previous screen when it exits. Redirected output contains plain text snapshots separated by a blank line. `--watch` cannot be combined with `--json`.
 
 `doctor` checks configuration, state, and foreground app detection. `preview` covers the content of the current foreground desktop app window for five seconds without changing credit. Use `preview --seconds 20` for a longer check. `config` redacts the token; `pair` intentionally displays it.
 

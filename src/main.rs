@@ -16,6 +16,8 @@ use timetoll::{
     storage::Store,
 };
 
+mod status;
+
 #[derive(Parser)]
 #[command(
     version,
@@ -37,8 +39,12 @@ enum Command {
     Run,
     /// Display banked access time and earning progress
     Status {
+        /// Print the ledger as JSON
         #[arg(long)]
         json: bool,
+        /// Refresh status every second until Ctrl+C
+        #[arg(long, conflicts_with = "json")]
+        watch: bool,
     },
     /// List, add, or remove targets in the blocked group
     Block {
@@ -167,23 +173,7 @@ fn execute(cli: Cli) -> Result<()> {
             }
             desktop.hide(Some(target.pid));
         }
-        Command::Status { json } => {
-            let config = store.config()?;
-            let mut state = store.ledger()?;
-            state.set_ratio(config.ratio);
-            if json {
-                println!("{}", serde_json::to_string_pretty(&state)?);
-            } else {
-                println!(
-                    "Banked access: {}\nEarning progress: {} / {}\nRatio: {} earns {}",
-                    time_text(state.balance_ms),
-                    time_text(state.progress_ms),
-                    time_text(config.ratio.earn_seconds * 1000),
-                    time_text(config.ratio.earn_seconds * 1000),
-                    time_text(config.ratio.unlock_seconds * 1000)
-                );
-            }
-        }
+        Command::Status { json, watch } => status::show(&store, json, watch)?,
         Command::Config => {
             let mut config = store.config()?;
             config.bridge_token = "<redacted; use timetoll pair>".into();
