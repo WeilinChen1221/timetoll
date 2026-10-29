@@ -127,6 +127,8 @@ timetoll preview
 
 The monitor reloads rules and the ratio within one second. Changes to the bridge port, token, or browser identifiers require a restart. Title-bar inset changes reload with the other rules. Invalid edits keep the last valid rules and print an error. Writes use atomic replacement, and the monitor checkpoints progress every second, on rewards, at balance exhaustion, and on normal shutdown. Abrupt termination can lose or restore up to roughly one second of usage. A process lock prevents two monitors from using the same ledger. Corrupt state causes an error instead of silently discarding credit.
 
+On Windows, atomic replacement retries temporary access and sharing failures with up to 500 ms of retry delays. Persistent failures still stop the monitor and report the operation and file path. See the [Windows exit investigation](docs/windows-stop-2026-10-29.md) for the captured failure and regression checks.
+
 The browser listener binds only to `127.0.0.1`. It requires a pairing token, validates browser identifiers, rejects ordinary website origins, and grants no CORS access. The extension sends no data to an external server. This is a local focus tool; another process running as your user can still read its files or interfere with its operation.
 
 ## What window blocking can do
