@@ -79,7 +79,7 @@ impl Store {
                 Ok(ledger)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Ledger::default()),
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error).with_context(|| format!("cannot read {}", path.display())),
         }
     }
 
@@ -92,11 +92,171 @@ impl Store {
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut temp = tempfile::NamedTempFile::new_in(path.parent().context("path has no parent")?)?;
-    temp.write_all(bytes)?;
-    temp.as_file().sync_all()?;
-    temp.persist(path).map_err(|e| e.error)?;
+    let parent = path.parent().context("path has no parent")?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("cannot create temporary file for {}", path.display()))?;
+    temp.write_all(bytes)
+        .with_context(|| format!("cannot write temporary file for {}", path.display()))?;
+    temp.as_file()
+        .sync_all()
+        .with_context(|| format!("cannot sync temporary file for {}", path.display()))?;
+    #[cfg(windows)]
+    let result = persist_with_retry(temp, path, |temp, path| temp.persist(path));
+    #[cfg(not(windows))]
+    let result = temp.persist(path).map(|_| ()).map_err(|e| e.error);
+    result.with_context(|| format!("cannot atomically replace {}", path.display()))?;
     #[cfg(unix)]
-    File::open(path.parent().unwrap())?.sync_all()?;
+    File::open(parent)
+        .and_then(|dir| dir.sync_all())
+        .with_context(|| format!("cannot sync directory {}", parent.display()))?;
     Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn persist_with_retry(
+    mut temp: tempfile::NamedTempFile,
+    path: &Path,
+    mut persist: impl FnMut(
+        tempfile::NamedTempFile,
+        &Path,
+    ) -> std::result::Result<File, tempfile::PersistError>,
+) -> std::io::Result<()> {
+    // Windows replacement can briefly fail while a reader or scanner holds a
+    // file open. Keep the same complete, synced file for each attempt. Never
+    // delete the destination or fall back to truncating it in place.
+    const RETRIES: usize = 20;
+    for attempt in 0..=RETRIES {
+        match persist(temp, path) {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION,
+                // ERROR_LOCK_VIOLATION. Permanent denials still fail after 500ms.
+                if attempt == RETRIES || !matches!(error.error.raw_os_error(), Some(5 | 32 | 33)) {
+                    return Err(error.error);
+                }
+                temp = error.file;
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
+    }
+    unreachable!("the final attempt returns success or an error")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_survives_transient_windows_access_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let old = Ledger::default();
+        let updated = Ledger {
+            balance_ms: 12345,
+            ..old.clone()
+        };
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let mut temp = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        temp.write_all(&serde_json::to_vec(&updated).unwrap())
+            .unwrap();
+        temp.as_file().sync_all().unwrap();
+        let mut attempts = 0;
+        let result = persist_with_retry(temp, &path, |temp, path| {
+            attempts += 1;
+            if attempts <= 3 {
+                // Replay the captured Windows error at the replacement boundary.
+                assert_eq!(
+                    serde_json::from_slice::<Ledger>(&fs::read(path).unwrap()).unwrap(),
+                    old
+                );
+                Err(tempfile::PersistError {
+                    error: std::io::Error::from_raw_os_error([5, 32, 33][attempts - 1]),
+                    file: temp,
+                })
+            } else {
+                temp.persist(path)
+            }
+        });
+        assert!(result.is_ok(), "checkpoint aborted: {result:?}");
+        assert_eq!(attempts, 4);
+        assert_eq!(
+            serde_json::from_slice::<Ledger>(&fs::read(path).unwrap()).unwrap(),
+            updated
+        );
+    }
+
+    #[test]
+    fn failed_replacement_preserves_previous_state_and_cleans_up_temp_file() {
+        // Persistent access/sharing errors are bounded; unrelated errors fail
+        // immediately. Neither case may remove or truncate the previous state.
+        for (code, expected_attempts) in [(5, 21), (32, 21), (33, 21), (112, 1)] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.json");
+            fs::write(&path, b"previous state").unwrap();
+            let mut temp = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+            temp.write_all(b"replacement state").unwrap();
+            let temp_path = temp.path().to_owned();
+            let mut attempts = 0;
+            let error = persist_with_retry(temp, &path, |temp, _| {
+                attempts += 1;
+                Err(tempfile::PersistError {
+                    error: std::io::Error::from_raw_os_error(code),
+                    file: temp,
+                })
+            })
+            .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(code));
+            assert_eq!(attempts, expected_attempts);
+            assert_eq!(fs::read(&path).unwrap(), b"previous state");
+            assert!(!temp_path.exists());
+        }
+    }
+
+    #[test]
+    fn replacement_error_identifies_operation_and_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        fs::create_dir(&path).unwrap();
+        let error = atomic_write(&path, b"state").unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("cannot atomically replace"), "{message}");
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replacement_recovers_after_real_windows_sharing_conflict() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        fs::write(&path, b"previous state").unwrap();
+        // Deliberately omit FILE_SHARE_DELETE to force a real OS denial.
+        let mut reader = Some(
+            OpenOptions::new()
+                .read(true)
+                .share_mode(3)
+                .open(&path)
+                .unwrap(),
+        );
+        let mut temp = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        temp.write_all(b"replacement state").unwrap();
+        temp.as_file().sync_all().unwrap();
+        let mut attempts = 0;
+        persist_with_retry(temp, &path, |temp, path| {
+            attempts += 1;
+            let result = temp.persist(path);
+            if attempts == 1 {
+                let error = result.as_ref().unwrap_err();
+                assert!(matches!(error.error.raw_os_error(), Some(5 | 32 | 33)));
+                assert_eq!(fs::read(path).unwrap(), b"previous state");
+                drop(reader.take());
+            }
+            result
+        })
+        .unwrap();
+        assert!(attempts >= 2);
+        assert_eq!(fs::read(&path).unwrap(), b"replacement state");
+    }
 }
