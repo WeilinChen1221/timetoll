@@ -17,6 +17,7 @@ use timetoll::{
 };
 
 mod status;
+mod tray;
 
 #[derive(Parser)]
 #[command(
@@ -35,8 +36,12 @@ struct Cli {
 enum Command {
     /// Create a configuration with the default 15:10 minute ratio
     Init,
-    /// Monitor usage and show blocking windows until Ctrl+C
-    Run,
+    /// Monitor usage with a status tray and blocking windows until Ctrl+C
+    Run {
+        /// Disable the menu bar or taskbar status icon
+        #[arg(long)]
+        no_tray: bool,
+    },
     /// Display banked access time and earning progress
     Status {
         /// Print the ledger as JSON
@@ -139,7 +144,7 @@ fn execute(cli: Cli) -> Result<()> {
             store.init()?;
             println!("Created {}", store.dir.join("config.toml").display());
         }
-        Command::Run => run(&store)?,
+        Command::Run { no_tray } => run(&store, no_tray)?,
         Command::Apps => platform::watch()?,
         Command::Preview { seconds } => {
             let mut desktop = Desktop::new()?;
@@ -296,7 +301,7 @@ fn time_text(ms: u64) -> String {
     format!("{}m {}s", ms / 60000, ms / 1000 % 60)
 }
 
-fn run(store: &Store) -> Result<()> {
+fn run(store: &Store, no_tray: bool) -> Result<()> {
     let _lock = store.lock("monitor.lock")?;
     let mut config = store.config()?;
     let mut policy = Policy::new(&config)?;
@@ -304,6 +309,17 @@ fn run(store: &Store) -> Result<()> {
     ledger.set_ratio(config.ratio);
     let mut desktop = Desktop::new()?;
     let running = shutdown_handler()?;
+    let mut tray = if no_tray {
+        None
+    } else {
+        match tray::Tray::new() {
+            Ok(tray) => Some(tray),
+            Err(error) => {
+                eprintln!("Status tray unavailable: {error:#}. Monitoring will continue.");
+                None
+            }
+        }
+    };
     let browser = bridge::start(
         config.bridge_port,
         config.bridge_token.clone(),
@@ -398,6 +414,9 @@ fn run(store: &Store) -> Result<()> {
                 active && previous_active,
             );
             let blocked = ledger.blocked(&activity);
+            if let Some(tray) = &mut tray {
+                tray.update(&tray::Snapshot::new(&ledger, &activity, active));
+            }
             browser.lock().unwrap().set_policy(&policy, &ledger);
             let is_browser = current.as_ref().is_some_and(|front| {
                 config
