@@ -52,6 +52,22 @@ timetoll run
 
 Keep this command running. Switch back to the terminal and press Ctrl+C to stop. TimeToll does not install a background service or a startup task.
 
+### Menu bar and taskbar status
+
+`timetoll run` adds an hourglass icon to the macOS menu bar or the Windows taskbar notification area. Windows may put it in the hidden-icons overflow. Click or right-click the icon to open a live status panel:
+
+```text
+State: earning
+Banked access: 0m 0s
+Earning progress: 0m 0s / 15m 0s
+```
+
+The panel updates from the monitor's live ledger as whole seconds change. State can be `earning`, `spending`, `neutral`, `idle`, `locked`, or `waiting for browser extension`. A lock or missing browser report takes precedence over idle. Rule and ratio changes appear after the monitor reloads them.
+
+The panel leaves the foreground app focused, so opening it does not pause accounting. Click the icon again or click outside the panel to dismiss it. Hover over the icon for a status tooltip. Ctrl+C stops monitoring, saves credit, and removes the icon. Closing the status panel keeps monitoring running.
+
+Use `timetoll run --no-tray` to run without the icon. If the OS cannot create the tray, TimeToll prints a warning and continues monitoring. Other commands do not create an icon. The implementation uses AppKit and Win32 directly, with no additional GUI framework or image files. The [tray-icon Rust project](https://github.com/tauri-apps/tray-icon) informed the native tray behavior; TimeToll uses a modeless panel so an open status view cannot block its monitoring loop.
+
 ## Browser extension
 
 Chrome, Thorium on macOS, Edge, Brave, Arc, Opera, Vivaldi, and Firefox are supported through the included extension. Safari URL tracking is not included. Safari is not supported for content-only blocking. Registered browsers always use their extension for blocking, so a native overlay cannot accidentally cover browser chrome.
@@ -178,3 +194,12 @@ mkdir -p target
 cc -fobjc-arc -Wno-deprecated-declarations native/macos_test.m -framework AppKit -framework ApplicationServices -o target/macos-window-tests
 ./target/macos-window-tests --fullscreen
 ```
+
+The macOS tray test checks live updates with the panel open, focus preservation, long timer values, dismissal, and cleanup. It writes a panel preview to `target/macos-tray-preview.png`:
+
+```sh
+cc -fobjc-arc -Wno-deprecated-declarations native/macos_tray_test.m -framework AppKit -framework ApplicationServices -o target/macos-tray-tests
+./target/macos-tray-tests
+```
+
+On both desktop platforms, check the tray while earning and spending, with zero balance, after becoming idle, and after changing the ratio. Leave the panel open across a reward and verify that timers continue updating. On Windows, also check the hidden-icons overflow, mixed-DPI displays, keyboard activation, Escape dismissal, and icon recovery after restarting Explorer. Confirm Ctrl+C removes the icon and preserves the ledger. Windows visual behavior requires a Windows desktop session.
