@@ -27,3 +27,13 @@ Windows unit tests exercise mouse-record filtering and register/unregister the a
 Local checks on macOS include the Rust suite, Windows cross-target Clippy, and the native tray test for live updates, focus preservation, and cleanup. A Windows desktop was not available locally for direct cursor-latency measurement.
 
 For desktop acceptance, run `timetoll run` on Windows and move the pointer continuously with the panel closed, open, and after repeated open/close cycles. Compare against `run --no-tray`. Verify outside-click dismissal, icon toggling, Escape, and Ctrl+C cleanup. Check a high-polling-rate mouse and a secondary display with negative coordinates if available. Ledger checkpoints should continue while the panel is open without cursor stalls.
+
+## Panel opening delay and Exit
+
+A separate delay remained after removing the mouse hook: the main thread slept for 250 ms between usage polls, and Windows consumed tray-click requests inside the ledger display update. That delayed opening and closing the panel even though the pointer itself no longer depended on a hook.
+
+The monitor now waits on native UI events between accounting deadlines. Windows uses `MsgWaitForMultipleObjectsEx` and macOS uses AppKit's event wait. Tray actions run after every event pump and before accounting or configuration reload. Accounting still runs at 250 ms intervals; UI events do not create extra accounting ticks. Waits are capped at 50 ms to check Ctrl+C and the Windows Escape key. Disk operations still share the main thread, so this removes the fixed polling delay rather than guaranteeing latency during slow filesystem operations.
+
+The macOS regression test posts an event after 20 ms. With the original sleep it was handled at 253.8 ms and failed a 150 ms assertion. With the event wait it was handled at about 30 ms, including the producer delay. The Windows test checks both newly arriving and already-queued messages against the native wait. These are event-dispatch measurements, not end-to-end Windows tray animation timings.
+
+Both panels now contain an Exit TimeToll button. It requests the same cleanup as Ctrl+C: stop monitoring, hide native overlays, save the final ledger, and drop the tray. Native callbacks do not terminate the process or bypass saving. Button tests check the request is consumed once and that dismissing the panel does not request exit. The Windows button scales with display DPI. Panel updates avoid resizing when the bounds are unchanged.

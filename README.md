@@ -50,7 +50,7 @@ Pair the browser extension as described below, then start monitoring:
 timetoll run
 ```
 
-Keep this command running. Switch back to the terminal and press Ctrl+C to stop. TimeToll does not install a background service or a startup task.
+Keep this command running. Choose **Exit TimeToll** in the tray panel or switch back to the terminal and press Ctrl+C to stop. TimeToll does not install a background service or a startup task.
 
 ### Menu bar and taskbar status
 
@@ -64,7 +64,9 @@ Earning progress: 0m 0s / 15m 0s
 
 The panel updates from the monitor's live ledger as whole seconds change. State can be `earning`, `spending`, `neutral`, `idle`, `locked`, or `waiting for browser extension`. A lock or missing browser report takes precedence over idle. Rule and ratio changes appear after the monitor reloads them.
 
-The panel leaves the foreground app focused, so opening it does not pause accounting. Click the icon again or click outside the panel to dismiss it. Hover over the icon for a status tooltip. Ctrl+C stops monitoring, saves credit, and removes the icon. Closing the status panel keeps monitoring running.
+The panel leaves the foreground app focused, so opening it does not pause accounting. Click the icon again or click outside the panel to dismiss it. Hover over the icon for a status tooltip. **Exit TimeToll** and Ctrl+C both stop monitoring, save credit, remove native overlays, and remove the icon. Closing the status panel keeps monitoring running.
+
+Tray clicks wake the native event loop immediately instead of waiting for the next 250 ms usage poll. The monitor handles opening, closing, and Exit before the next accounting pass. Timer updates keep their existing cadence, and unchanged panel sizes do not trigger a resize.
 
 Use `timetoll run --no-tray` to run without the icon. If the OS cannot create the tray, TimeToll prints a warning and continues monitoring. Other commands do not create an icon. The implementation uses AppKit and Win32 directly, with no additional GUI framework or image files. The [tray-icon Rust project](https://github.com/tauri-apps/tray-icon) informed the native tray behavior; TimeToll uses a modeless panel so an open status view cannot block its monitoring loop.
 
@@ -195,13 +197,13 @@ cc -fobjc-arc -Wno-deprecated-declarations native/macos_test.m -framework AppKit
 ./target/macos-window-tests --fullscreen
 ```
 
-The macOS tray test checks live updates with the panel open, focus preservation, long timer values, dismissal, and cleanup. It writes a panel preview to `target/macos-tray-preview.png`:
+The macOS tray test checks event wakeup latency, live updates with the panel open, focus preservation, long timer values, the Exit action, dismissal, and cleanup. It writes a panel preview to `target/macos-tray-preview.png`:
 
 ```sh
 cc -fobjc-arc -Wno-deprecated-declarations native/macos_tray_test.m -framework AppKit -framework ApplicationServices -o target/macos-tray-tests
 ./target/macos-tray-tests
 ```
 
-On both desktop platforms, check the tray while earning and spending, with zero balance, after becoming idle, and after changing the ratio. Leave the panel open across a reward and verify that timers continue updating. On Windows, also check the hidden-icons overflow, mixed-DPI displays, keyboard activation, Escape dismissal, and icon recovery after restarting Explorer. Confirm Ctrl+C removes the icon and preserves the ledger. Windows visual behavior requires a Windows desktop session.
+On both desktop platforms, check the tray while earning and spending, with zero balance, after becoming idle, and after changing the ratio. Leave the panel open across a reward and verify that timers continue updating. On Windows, also check the hidden-icons overflow, mixed-DPI displays, keyboard activation, Escape dismissal, and icon recovery after restarting Explorer. Confirm both Exit TimeToll and Ctrl+C remove the icon and preserve the ledger. Windows visual behavior requires a Windows desktop session.
 
 The [Windows tray input investigation](docs/windows-tray-input-lag-2026-11-10.md) explains the cursor-lag regression, the asynchronous input fix, and the macOS review. Include continuous pointer movement with the panel open and closed in desktop acceptance checks.
