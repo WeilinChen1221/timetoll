@@ -8,6 +8,7 @@ unsafe extern "C" {
     fn tt_tray_init() -> bool;
     fn tt_tray_update(state: *const c_char, balance: *const c_char, progress: *const c_char);
     fn tt_tray_destroy();
+    fn tt_tray_take_exit() -> bool;
 }
 
 // Like Desktop, this owner must stay on the AppKit main thread.
@@ -38,6 +39,10 @@ impl Tray {
         let progress = CString::new(snapshot.progress.as_str()).unwrap();
         unsafe { tt_tray_update(state.as_ptr(), balance.as_ptr(), progress.as_ptr()) };
         self.previous = Some(snapshot.clone());
+    }
+
+    pub fn handle_events(&mut self) -> bool {
+        unsafe { tt_tray_take_exit() }
     }
 }
 

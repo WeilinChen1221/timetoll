@@ -337,14 +337,34 @@ fn run(store: &Store, no_tray: bool) -> Result<()> {
     let mut config_error = String::new();
     let mut last_log = String::new();
     store.save_ledger(&ledger)?;
+    if let Some(tray) = &mut tray {
+        tray.update(&tray::Snapshot::new(&ledger, &Activity::Neutral, false));
+    }
+    let stop_hint = if tray.is_some() {
+        "Use Exit TimeToll in the tray or press Ctrl+C to stop."
+    } else {
+        "Press Ctrl+C in this terminal to stop."
+    };
     println!(
-        "TimeToll is running. Press Ctrl+C in this terminal to stop.\nBanked access: {}",
+        "TimeToll is running. {stop_hint}\nBanked access: {}",
         time_text(ledger.balance_ms)
     );
+    let mut next_poll = Instant::now();
     let result = (|| -> Result<()> {
         while running.load(Ordering::Relaxed) {
             desktop.pump();
+            if tray.as_mut().is_some_and(|tray| tray.handle_events()) {
+                running.store(false, Ordering::Relaxed);
+                break;
+            }
             let now = Instant::now();
+            if now < next_poll {
+                // Native input wakes this wait immediately. The short cap also
+                // checks Ctrl+C and Escape without needing a GUI key hook.
+                desktop.wait((next_poll - now).min(Duration::from_millis(50)));
+                continue;
+            }
+            next_poll = now + Duration::from_millis(250);
             let elapsed = now
                 .duration_since(previous_time)
                 .as_millis()
@@ -477,7 +497,6 @@ fn run(store: &Store, no_tray: bool) -> Result<()> {
             if current.is_some() {
                 last_foreground = current;
             }
-            std::thread::sleep(Duration::from_millis(250));
         }
         Ok(())
     })();

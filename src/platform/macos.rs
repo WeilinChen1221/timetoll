@@ -5,6 +5,7 @@ use std::ffi::{CStr, CString, c_char};
 unsafe extern "C" {
     fn tt_init() -> bool;
     fn tt_pump();
+    fn tt_wait(seconds: f64);
     fn tt_foreground(buffer: *mut c_char, size: usize, pid: *mut u32, window_id: *mut u64) -> bool;
     fn tt_idle_seconds() -> f64;
     fn tt_show(
@@ -35,6 +36,9 @@ impl Desktop {
     }
     pub fn pump(&mut self) {
         unsafe { tt_pump() }
+    }
+    pub fn wait(&mut self, timeout: std::time::Duration) {
+        unsafe { tt_wait(timeout.as_secs_f64()) }
     }
     pub fn foreground(&self) -> Option<Foreground> {
         let mut buffer = [0 as c_char; 1024];

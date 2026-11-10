@@ -218,6 +218,26 @@ impl Desktop {
         }
     }
 
+    pub fn wait(&mut self, timeout: std::time::Duration) {
+        unsafe {
+            // Wake for already-queued input as well as newly arriving events.
+            // The monitor decides when accounting is due after dispatching UI.
+            let result = MsgWaitForMultipleObjectsEx(
+                0,
+                null(),
+                timeout
+                    .as_nanos()
+                    .div_ceil(1_000_000)
+                    .min(u128::from(u32::MAX - 1)) as u32,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            );
+            if result == WAIT_FAILED {
+                std::thread::sleep(timeout);
+            }
+        }
+    }
+
     pub fn foreground(&self) -> Option<Foreground> {
         unsafe {
             let hwnd = GetAncestor(GetForegroundWindow(), GA_ROOT);
@@ -402,5 +422,67 @@ impl Drop for Desktop {
                 DestroyWindow(hwnd);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn desktop_wait_wakes_for_new_and_already_queued_ui_messages() {
+        let mut desktop = Desktop::new().unwrap();
+        desktop.pump(); // Ensure this thread has a Windows message queue.
+        let thread_id = unsafe { GetCurrentThreadId() };
+        const TEST_MESSAGE: u32 = WM_APP + 100;
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            assert_ne!(
+                unsafe { PostThreadMessageW(thread_id, TEST_MESSAGE, 0, 0) },
+                0
+            );
+        });
+        let start = Instant::now();
+        let mut received = false;
+        while !received && start.elapsed() < Duration::from_secs(1) {
+            desktop.wait(Duration::from_millis(250));
+            unsafe {
+                let mut message: MSG = std::mem::zeroed();
+                while PeekMessageW(&mut message, null_mut(), 0, 0, PM_REMOVE) != 0 {
+                    if message.message == TEST_MESSAGE {
+                        received = true;
+                    } else {
+                        TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
+                }
+            }
+        }
+        let elapsed = start.elapsed();
+        sender.join().unwrap();
+        assert!(
+            received && elapsed < Duration::from_millis(150),
+            "UI message waited {elapsed:?}"
+        );
+        unsafe {
+            assert_ne!(PostThreadMessageW(thread_id, TEST_MESSAGE, 0, 0), 0);
+            let mut message: MSG = std::mem::zeroed();
+            // Seen-but-unread messages must wake the native wait as well.
+            assert_ne!(
+                PeekMessageW(
+                    &mut message,
+                    null_mut(),
+                    TEST_MESSAGE,
+                    TEST_MESSAGE,
+                    PM_NOREMOVE
+                ),
+                0
+            );
+        }
+        let start = Instant::now();
+        desktop.wait(Duration::from_millis(250));
+        assert!(start.elapsed() < Duration::from_millis(100));
+        desktop.pump();
     }
 }

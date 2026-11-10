@@ -46,6 +46,16 @@ void tt_pump(void) {
     }
 }
 
+void tt_wait(double seconds) {
+    @autoreleasepool {
+        // Leave the event queued for tt_pump. Unlike sleep, this returns as
+        // soon as a tray click, button action, or other AppKit event arrives.
+        [NSApp nextEventMatchingMask:NSEventMaskAny
+            untilDate:[NSDate dateWithTimeIntervalSinceNow:seconds]
+            inMode:NSDefaultRunLoopMode dequeue:NO];
+    }
+}
+
 // This reads public window geometry, never window titles or screen images.
 static NSArray<NSDictionary *> *onScreenWindows(void) {
     return CFBridgingRelease(CGWindowListCopyWindowInfo(

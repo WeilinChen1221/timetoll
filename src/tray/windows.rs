@@ -24,7 +24,9 @@ use super::Snapshot;
 const TRAY_MESSAGE: u32 = WM_APP + 1;
 // shellapi.h defines this as an expression, omitted by windows-sys bindings.
 const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
+const EXIT_BUTTON_ID: usize = 2;
 static TOGGLE: AtomicBool = AtomicBool::new(false);
+static EXIT: AtomicBool = AtomicBool::new(false);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 static RECREATE: AtomicBool = AtomicBool::new(false);
 static CLICKED: AtomicBool = AtomicBool::new(false);
@@ -118,6 +120,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, w: WPARAM, l: LP
             return 0;
         }
         match message {
+            WM_COMMAND
+                if w & 0xffff == EXIT_BUTTON_ID && (w >> 16) & 0xffff == BN_CLICKED as usize =>
+            {
+                EXIT.store(true, Ordering::Relaxed);
+                0
+            }
             WM_INPUT => {
                 if IsWindowVisible(hwnd) != 0 {
                     record_mouse_input(l as HRAWINPUT);
@@ -205,6 +213,8 @@ pub struct Tray {
     window: HWND,
     icon: HICON,
     mouse_input: Option<MouseInput>,
+    button_font: HFONT,
+    button_dpi: i32,
     text: String,
     // Owned and used by the same thread as Desktop's Windows message pump.
     _main_thread: std::marker::PhantomData<*mut ()>,
@@ -234,7 +244,7 @@ impl Tray {
                 WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
                 class.as_ptr(),
                 wide("TimeToll").as_ptr(),
-                WS_POPUP | WS_BORDER,
+                WS_POPUP | WS_BORDER | WS_CLIPCHILDREN,
                 0,
                 0,
                 360,
@@ -249,9 +259,12 @@ impl Tray {
                 window,
                 icon: null_mut(),
                 mouse_input: None,
+                button_font: null_mut(),
+                button_dpi: 0,
                 text: String::new(),
                 _main_thread: std::marker::PhantomData,
             };
+            create_exit_button(window)?;
             // Draw an hourglass directly into a small BGRA icon. No image
             // decoder or asset files are needed by the installed executable.
             let mut mask = [255u8; 128];
@@ -314,6 +327,26 @@ impl Tray {
             snapshot.state, snapshot.balance, snapshot.progress
         );
         unsafe {
+            if self.text != text {
+                self.text = text;
+                SetWindowTextW(self.window, wide(&self.text).as_ptr());
+                Shell_NotifyIconW(NIM_MODIFY, &self.icon_data());
+                InvalidateRect(self.window, null(), 0);
+                if IsWindowVisible(self.window) != 0 {
+                    self.position();
+                }
+            }
+        }
+    }
+
+    // UI actions run after every message pump, not just on accounting ticks.
+    // Return an exit request to the monitor so it saves the ledger normally.
+    pub fn handle_events(&mut self) -> bool {
+        if EXIT.swap(false, Ordering::Relaxed) {
+            self.hide_panel();
+            return true;
+        }
+        unsafe {
             // Also release observation if Windows closed the panel directly.
             if IsWindowVisible(self.window) == 0 {
                 self.mouse_input = None;
@@ -324,15 +357,6 @@ impl Tray {
                 x: (click >> 32) as i32,
                 y: click as i32,
             };
-            if self.text != text {
-                self.text = text;
-                SetWindowTextW(self.window, wide(&self.text).as_ptr());
-                Shell_NotifyIconW(NIM_MODIFY, &self.icon_data());
-                InvalidateRect(self.window, null(), 1);
-                if IsWindowVisible(self.window) != 0 {
-                    self.position();
-                }
-            }
             // Explorer recreates the notification area after a shell restart.
             if RECREATE.swap(false, Ordering::Relaxed) && !self.add_icon() {
                 RECREATE.store(true, Ordering::Relaxed);
@@ -349,16 +373,20 @@ impl Tray {
                     }
                     self.position();
                     ShowWindow(self.window, SW_SHOWNOACTIVATE);
+                    UpdateWindow(self.window);
                 }
             } else if IsWindowVisible(self.window) != 0 {
-                let mut rect: RECT = std::mem::zeroed();
-                GetWindowRect(self.window, &mut rect);
-                let outside = !contains(rect, mouse) && !contains(self.anchor(), mouse);
-                if GetAsyncKeyState(VK_ESCAPE as i32) < 0 || (clicked && outside) {
+                let outside = clicked && {
+                    let mut rect: RECT = std::mem::zeroed();
+                    GetWindowRect(self.window, &mut rect);
+                    !contains(rect, mouse) && !contains(self.anchor(), mouse)
+                };
+                if GetAsyncKeyState(VK_ESCAPE as i32) < 0 || outside {
                     self.hide_panel();
                 }
             }
         }
+        false
     }
 
     fn hide_panel(&mut self) {
@@ -389,7 +417,7 @@ impl Tray {
         }
     }
 
-    unsafe fn position(&self) {
+    unsafe fn position(&mut self) {
         unsafe {
             let anchor = self.anchor();
             let mut monitor: MONITORINFO = std::mem::zeroed();
@@ -417,6 +445,22 @@ impl Tray {
                 );
             }
             let dpi = GetDpiForWindow(self.window).max(96) as i32;
+            if self.button_dpi != dpi {
+                let font = status_font(self.window);
+                if !font.is_null() {
+                    SendMessageW(
+                        GetDlgItem(self.window, EXIT_BUTTON_ID as i32),
+                        WM_SETFONT,
+                        font as WPARAM,
+                        1,
+                    );
+                    if !self.button_font.is_null() {
+                        DeleteObject(self.button_font);
+                    }
+                    self.button_font = font;
+                    self.button_dpi = dpi;
+                }
+            }
             let dc = GetDC(self.window);
             let font = status_font(self.window);
             let old = SelectObject(dc, font);
@@ -432,7 +476,7 @@ impl Tray {
             ReleaseDC(self.window, dc);
             let work = monitor.rcWork;
             width = width.min(work.right - work.left);
-            let height = 148 * dpi / 96;
+            let height = 196 * dpi / 96;
             let x = (anchor.right - width).clamp(work.left, work.right - width);
             let y = if anchor.top - height >= work.top {
                 anchor.top - height
@@ -440,17 +484,64 @@ impl Tray {
                 anchor.bottom
             };
             let y = y.clamp(work.top, (work.bottom - height).max(work.top));
-            SetWindowPos(
-                self.window,
-                HWND_TOPMOST,
-                x,
-                y,
-                width,
-                height,
-                SWP_NOACTIVATE,
-            );
+            let mut current: RECT = std::mem::zeroed();
+            GetWindowRect(self.window, &mut current);
+            if current.left != x
+                || current.top != y
+                || current.right - current.left != width
+                || current.bottom - current.top != height
+            {
+                SetWindowPos(
+                    self.window,
+                    HWND_TOPMOST,
+                    x,
+                    y,
+                    width,
+                    height,
+                    SWP_NOACTIVATE,
+                );
+                let button = GetDlgItem(self.window, EXIT_BUTTON_ID as i32);
+                SetWindowPos(
+                    button,
+                    null_mut(),
+                    width - 146 * dpi / 96,
+                    146 * dpi / 96,
+                    126 * dpi / 96,
+                    30 * dpi / 96,
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                );
+            }
         }
     }
+}
+
+fn create_exit_button(parent: HWND) -> Result<()> {
+    let button = unsafe {
+        CreateWindowExW(
+            0,
+            wide("BUTTON").as_ptr(),
+            wide("Exit TimeToll").as_ptr(),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
+            194,
+            146,
+            126,
+            30,
+            parent,
+            EXIT_BUTTON_ID as HMENU,
+            GetModuleHandleW(null()),
+            null(),
+        )
+    };
+    ensure!(!button.is_null(), "cannot create tray Exit button");
+    unsafe {
+        SendMessageW(
+            button,
+            WM_SETFONT,
+            GetStockObject(DEFAULT_GUI_FONT) as WPARAM,
+            1,
+        )
+    };
+    Ok(())
 }
 
 impl Drop for Tray {
@@ -459,6 +550,9 @@ impl Drop for Tray {
             self.mouse_input = None;
             Shell_NotifyIconW(NIM_DELETE, &self.icon_data());
             DestroyWindow(self.window);
+            if !self.button_font.is_null() {
+                DeleteObject(self.button_font);
+            }
             if !self.icon.is_null() {
                 DestroyIcon(self.icon);
             }
@@ -470,6 +564,49 @@ impl Drop for Tray {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_exit_button_requests_shutdown_without_quitting_the_message_loop() {
+        unsafe {
+            let class = wide("TimeTollTrayExitTest");
+            let instance = GetModuleHandleW(null());
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(window_proc),
+                hInstance: instance,
+                lpszClassName: class.as_ptr(),
+                ..std::mem::zeroed()
+            };
+            assert_ne!(RegisterClassW(&wc), 0);
+            let window = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                wide("Exit test").as_ptr(),
+                WS_POPUP,
+                0,
+                0,
+                340,
+                196,
+                null_mut(),
+                null_mut(),
+                instance,
+                null(),
+            );
+            assert!(!window.is_null());
+            create_exit_button(window).unwrap();
+            assert!(!EXIT.load(Ordering::Relaxed));
+            SendMessageW(GetDlgItem(window, EXIT_BUTTON_ID as i32), BM_CLICK, 0, 0);
+            assert!(EXIT.swap(false, Ordering::Relaxed));
+            assert!(!EXIT.swap(false, Ordering::Relaxed));
+            // The monitor, not the window callback, owns saving and shutdown.
+            let mut message: MSG = std::mem::zeroed();
+            assert_eq!(
+                PeekMessageW(&mut message, null_mut(), WM_QUIT, WM_QUIT, PM_NOREMOVE),
+                0
+            );
+            DestroyWindow(window);
+            UnregisterClassW(class.as_ptr(), instance);
+        }
+    }
 
     #[test]
     fn only_mouse_button_down_requests_dismissal() {

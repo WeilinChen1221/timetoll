@@ -26,6 +26,9 @@ impl Desktop {
         anyhow::bail!("desktop monitoring supports macOS and Windows only")
     }
     pub fn pump(&mut self) {}
+    pub fn wait(&mut self, timeout: std::time::Duration) {
+        std::thread::sleep(timeout);
+    }
     pub fn foreground(&self) -> Option<Foreground> {
         None
     }

@@ -14,14 +14,21 @@
 @property NSStatusItem *item;
 @property TollStatusPanel *panel;
 @property NSArray<NSTextField *> *rows;
+@property NSButton *exitButton;
+@property BOOL exitRequested;
 @property id globalClick;
 @property id localClick;
 - (void)toggle:(id)sender;
 - (void)dismissOutside;
 - (void)positionPanel;
+- (void)requestExit:(id)sender;
 @end
 
 @implementation TollTray
+- (void)requestExit:(id)sender {
+    self.exitRequested = YES;
+    [self.panel orderOut:nil];
+}
 - (void)positionPanel {
     NSRect anchor = [self.item.button.window convertRectToScreen:
         [self.item.button convertRect:self.item.button.bounds toView:nil]];
@@ -82,7 +89,7 @@ bool tt_tray_init(void) {
         tray.item.button.action = @selector(toggle:);
         [tray.item.button sendActionOn:NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp];
 
-        tray.panel = [[TollStatusPanel alloc] initWithContentRect:NSMakeRect(0, 0, 340, 152)
+        tray.panel = [[TollStatusPanel alloc] initWithContentRect:NSMakeRect(0, 0, 340, 200)
             styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
             backing:NSBackingStoreBuffered defer:NO];
         tray.panel.releasedWhenClosed = NO;
@@ -105,11 +112,20 @@ bool tt_tray_init(void) {
             row.font = i == 0 ? [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]
                 : [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
             row.textColor = i == 0 ? NSColor.secondaryLabelColor : NSColor.labelColor;
-            row.frame = NSMakeRect(18, 117 - i * 29, 304, 20);
+            row.frame = NSMakeRect(18, 165 - i * 29, 304, 20);
             [content addSubview:row];
             [rows addObject:row];
         }
         tray.rows = rows;
+        NSBox *separator = [[NSBox alloc] initWithFrame:NSMakeRect(18, 60, 304, 1)];
+        separator.boxType = NSBoxSeparator;
+        separator.autoresizingMask = NSViewWidthSizable;
+        [content addSubview:separator];
+        tray.exitButton = [NSButton buttonWithTitle:@"Exit TimeToll" target:tray action:@selector(requestExit:)];
+        tray.exitButton.bezelStyle = NSBezelStyleRounded;
+        tray.exitButton.frame = NSMakeRect(200, 14, 122, 30);
+        tray.exitButton.autoresizingMask = NSViewMinXMargin;
+        [content addSubview:tray.exitButton];
         // Mouse-only global monitors need no Accessibility permission.
         __weak TollTray *weakTray = tray;
         NSEventMask clicks = NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown;
@@ -136,15 +152,23 @@ void tt_tray_update(const char *state, const char *balance, const char *progress
             row.stringValue = values[i];
             width = MAX(width, row.cell.cellSize.width + 36);
         }
-        [tray.panel setContentSize:NSMakeSize(width, 152)];
-        for (NSTextField *row in tray.rows) {
-            NSRect frame = row.frame;
-            frame.size.width = width - 36;
-            row.frame = frame;
+        if (tray.panel.contentView.frame.size.width != width) {
+            [tray.panel setContentSize:NSMakeSize(width, 200)];
+            for (NSTextField *row in tray.rows) {
+                NSRect frame = row.frame;
+                frame.size.width = width - 36;
+                row.frame = frame;
+            }
+            if (tray.panel.visible) [tray positionPanel];
         }
-        if (tray.panel.visible) [tray positionPanel];
         tray.item.button.toolTip = [@"TimeToll\n" stringByAppendingString:[values componentsJoinedByString:@"\n"]];
     }
+}
+
+bool tt_tray_take_exit(void) {
+    bool requested = tray.exitRequested;
+    tray.exitRequested = NO;
+    return requested;
 }
 
 void tt_tray_destroy(void) {

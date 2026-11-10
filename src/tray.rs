@@ -19,6 +19,9 @@ impl Tray {
         anyhow::bail!("status tray supports macOS and Windows only")
     }
     pub fn update(&mut self, _: &Snapshot) {}
+    pub fn handle_events(&mut self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
