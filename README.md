@@ -203,3 +203,5 @@ cc -fobjc-arc -Wno-deprecated-declarations native/macos_tray_test.m -framework A
 ```
 
 On both desktop platforms, check the tray while earning and spending, with zero balance, after becoming idle, and after changing the ratio. Leave the panel open across a reward and verify that timers continue updating. On Windows, also check the hidden-icons overflow, mixed-DPI displays, keyboard activation, Escape dismissal, and icon recovery after restarting Explorer. Confirm Ctrl+C removes the icon and preserves the ledger. Windows visual behavior requires a Windows desktop session.
+
+The [Windows tray input investigation](docs/windows-tray-input-lag-2026-11-10.md) explains the cursor-lag regression, the asynchronous input fix, and the macOS review. Include continuous pointer movement with the panel open and closed in desktop acceptance checks.
