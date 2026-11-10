@@ -10,7 +10,10 @@ use windows_sys::Win32::{
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         HiDpi::GetDpiForWindow,
-        Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE},
+        Input::{
+            KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE},
+            *,
+        },
         Shell::*,
         WindowsAndMessaging::*,
     },
@@ -27,19 +30,76 @@ static RECREATE: AtomicBool = AtomicBool::new(false);
 static CLICKED: AtomicBool = AtomicBool::new(false);
 static CLICK_POSITION: AtomicU64 = AtomicU64::new(0);
 
-// Record mouse-down events rather than polling button state: a complete click
-// can occur between monitor ticks. Always pass input on to the foreground app.
-unsafe extern "system" fn mouse_proc(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
+// Raw input is queued asynchronously. A synchronous low-level mouse hook here
+// would stall system-wide input during the monitor's 250 ms sleep and file I/O.
+// Only subscribe while the panel is open, so a closed tray receives no motion.
+struct MouseInput;
+
+impl MouseInput {
+    fn new(window: HWND) -> Result<Self> {
+        let device = RAWINPUTDEVICE {
+            usUsagePage: 1, // Generic desktop controls
+            usUsage: 2,     // Mouse
+            dwFlags: RIDEV_INPUTSINK,
+            hwndTarget: window,
+        };
+        ensure!(
+            unsafe { RegisterRawInputDevices(&device, 1, size_of::<RAWINPUTDEVICE>() as u32) } != 0,
+            "cannot observe outside clicks: {}",
+            std::io::Error::last_os_error()
+        );
+        Ok(Self)
+    }
+}
+
+impl Drop for MouseInput {
+    fn drop(&mut self) {
+        let device = RAWINPUTDEVICE {
+            usUsagePage: 1,
+            usUsage: 2,
+            dwFlags: RIDEV_REMOVE,
+            hwndTarget: null_mut(),
+        };
+        unsafe { RegisterRawInputDevices(&device, 1, size_of::<RAWINPUTDEVICE>() as u32) };
+    }
+}
+
+fn is_dismissal_click(input: &RAWINPUT) -> bool {
+    input.header.dwType == RIM_TYPEMOUSE
+        && unsafe { input.data.mouse.Anonymous.Anonymous.usButtonFlags }
+            & (RI_MOUSE_LEFT_BUTTON_DOWN | RI_MOUSE_RIGHT_BUTTON_DOWN) as u16
+            != 0
+}
+
+unsafe fn record_mouse_input(handle: HRAWINPUT) {
     unsafe {
-        if code >= 0 && matches!(w as u32, WM_LBUTTONDOWN | WM_RBUTTONDOWN) {
-            let point = (*(l as *const MSLLHOOKSTRUCT)).pt;
+        let mut input: RAWINPUT = std::mem::zeroed();
+        let mut size = size_of::<RAWINPUT>() as u32;
+        let read = GetRawInputData(
+            handle,
+            RID_INPUT,
+            (&mut input as *mut RAWINPUT).cast(),
+            &mut size,
+            size_of::<RAWINPUTHEADER>() as u32,
+        );
+        if read != u32::MAX
+            && read as usize >= size_of::<RAWINPUTHEADER>() + size_of::<RAWMOUSE>()
+            && is_dismissal_click(&input)
+        {
+            // Use the queued event position, not the cursor's later position
+            // after a click-and-move between monitor ticks. Preserve signs for
+            // monitors to the left of or above the primary display.
+            let position = GetMessagePos();
+            let point = POINT {
+                x: position as i16 as i32,
+                y: (position >> 16) as i16 as i32,
+            };
             CLICK_POSITION.store(
                 (point.x as u32 as u64) << 32 | point.y as u32 as u64,
                 Ordering::Relaxed,
             );
             CLICKED.store(true, Ordering::Relaxed);
         }
-        CallNextHookEx(null_mut(), code, w, l)
     }
 }
 
@@ -58,6 +118,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, w: WPARAM, l: LP
             return 0;
         }
         match message {
+            WM_INPUT => {
+                if IsWindowVisible(hwnd) != 0 {
+                    record_mouse_input(l as HRAWINPUT);
+                }
+                // Required cleanup for foreground raw-input messages.
+                DefWindowProcW(hwnd, message, w, l)
+            }
             TRAY_MESSAGE => {
                 if matches!(
                     l as u32 & 0xffff,
@@ -137,7 +204,7 @@ unsafe fn status_font(hwnd: HWND) -> HFONT {
 pub struct Tray {
     window: HWND,
     icon: HICON,
-    mouse_hook: HHOOK,
+    mouse_input: Option<MouseInput>,
     text: String,
     // Owned and used by the same thread as Desktop's Windows message pump.
     _main_thread: std::marker::PhantomData<*mut ()>,
@@ -181,7 +248,7 @@ impl Tray {
             let mut tray = Self {
                 window,
                 icon: null_mut(),
-                mouse_hook: null_mut(),
+                mouse_input: None,
                 text: String::new(),
                 _main_thread: std::marker::PhantomData,
             };
@@ -206,11 +273,6 @@ impl Tray {
             tray.icon = CreateIcon(instance, 32, 32, 1, 32, mask.as_ptr(), pixels.as_ptr());
             ensure!(!tray.icon.is_null(), "cannot create tray icon");
             ensure!(tray.add_icon(), "cannot add taskbar status icon");
-            tray.mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), instance, 0);
-            ensure!(
-                !tray.mouse_hook.is_null(),
-                "cannot observe status panel dismissal clicks"
-            );
             Ok(tray)
         }
     }
@@ -252,6 +314,10 @@ impl Tray {
             snapshot.state, snapshot.balance, snapshot.progress
         );
         unsafe {
+            // Also release observation if Windows closed the panel directly.
+            if IsWindowVisible(self.window) == 0 {
+                self.mouse_input = None;
+            }
             let clicked = CLICKED.swap(false, Ordering::Relaxed);
             let click = CLICK_POSITION.load(Ordering::Relaxed);
             let mouse = POINT {
@@ -273,8 +339,14 @@ impl Tray {
             }
             if TOGGLE.swap(false, Ordering::Relaxed) {
                 if IsWindowVisible(self.window) != 0 {
-                    ShowWindow(self.window, SW_HIDE);
+                    self.hide_panel();
                 } else {
+                    match MouseInput::new(self.window) {
+                        Ok(input) => self.mouse_input = Some(input),
+                        Err(error) => {
+                            eprintln!("{error:#}. Click the tray icon to close the status panel.")
+                        }
+                    }
                     self.position();
                     ShowWindow(self.window, SW_SHOWNOACTIVATE);
                 }
@@ -283,10 +355,15 @@ impl Tray {
                 GetWindowRect(self.window, &mut rect);
                 let outside = !contains(rect, mouse) && !contains(self.anchor(), mouse);
                 if GetAsyncKeyState(VK_ESCAPE as i32) < 0 || (clicked && outside) {
-                    ShowWindow(self.window, SW_HIDE);
+                    self.hide_panel();
                 }
             }
         }
+    }
+
+    fn hide_panel(&mut self) {
+        self.mouse_input = None;
+        unsafe { ShowWindow(self.window, SW_HIDE) };
     }
 
     unsafe fn anchor(&self) -> RECT {
@@ -379,15 +456,108 @@ impl Tray {
 impl Drop for Tray {
     fn drop(&mut self) {
         unsafe {
-            if !self.mouse_hook.is_null() {
-                UnhookWindowsHookEx(self.mouse_hook);
-            }
+            self.mouse_input = None;
             Shell_NotifyIconW(NIM_DELETE, &self.icon_data());
             DestroyWindow(self.window);
             if !self.icon.is_null() {
                 DestroyIcon(self.icon);
             }
             UnregisterClassW(wide("TimeTollStatus").as_ptr(), GetModuleHandleW(null()));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_mouse_button_down_requests_dismissal() {
+        let mut input = RAWINPUT::default();
+        input.header.dwType = RIM_TYPEMOUSE;
+        for (flags, expected) in [
+            (0, false), // Motion, including high-polling-rate mice
+            (RI_MOUSE_LEFT_BUTTON_DOWN, true),
+            (RI_MOUSE_RIGHT_BUTTON_DOWN, true),
+            (RI_MOUSE_LEFT_BUTTON_UP, false),
+            (RI_MOUSE_RIGHT_BUTTON_UP, false),
+            (RI_MOUSE_WHEEL, false),
+            (RI_MOUSE_LEFT_BUTTON_DOWN | RI_MOUSE_LEFT_BUTTON_UP, true),
+        ] {
+            input.data.mouse = RAWMOUSE {
+                Anonymous: RAWMOUSE_0 {
+                    Anonymous: RAWMOUSE_0_0 {
+                        usButtonFlags: flags as u16,
+                        usButtonData: 0,
+                    },
+                },
+                ..Default::default()
+            };
+            assert_eq!(is_dismissal_click(&input), expected);
+        }
+        input.header.dwType = RIM_TYPEKEYBOARD;
+        assert!(!is_dismissal_click(&input));
+        input.header.dwType = RIM_TYPEHID;
+        assert!(!is_dismissal_click(&input));
+    }
+
+    fn registered_mice() -> Vec<RAWINPUTDEVICE> {
+        unsafe {
+            let mut count = 0;
+            let size = size_of::<RAWINPUTDEVICE>() as u32;
+            let result = GetRegisteredRawInputDevices(null_mut(), &mut count, size);
+            assert!(result != u32::MAX || GetLastError() == ERROR_INSUFFICIENT_BUFFER);
+            if count == 0 {
+                return vec![];
+            }
+            let mut devices = vec![RAWINPUTDEVICE::default(); count as usize];
+            let written = GetRegisteredRawInputDevices(devices.as_mut_ptr(), &mut count, size);
+            assert_ne!(written, u32::MAX);
+            devices.truncate(written as usize);
+            devices
+                .into_iter()
+                .filter(|d| d.usUsagePage == 1 && d.usUsage == 2)
+                .collect()
+        }
+    }
+
+    #[test]
+    fn raw_mouse_subscription_is_passive_and_released_on_close() {
+        struct Window(HWND);
+        impl Drop for Window {
+            fn drop(&mut self) {
+                unsafe { DestroyWindow(self.0) };
+            }
+        }
+        // A hidden OS window exercises registration without an Explorer tray,
+        // moving the pointer, injecting input, or depending on physical devices.
+        let window = Window(unsafe {
+            CreateWindowExW(
+                0,
+                wide("STATIC").as_ptr(),
+                wide("TimeToll input test").as_ptr(),
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                null_mut(),
+                null_mut(),
+                GetModuleHandleW(null()),
+                null(),
+            )
+        });
+        assert!(!window.0.is_null());
+        assert!(registered_mice().is_empty());
+        for _ in 0..2 {
+            let input = MouseInput::new(window.0).unwrap();
+            let mice = registered_mice();
+            assert_eq!(mice.len(), 1);
+            assert_eq!(mice[0].hwndTarget, window.0);
+            // Do not capture the mouse or suppress the foreground app's input.
+            assert_eq!(mice[0].dwFlags, RIDEV_INPUTSINK);
+            drop(input);
+            assert!(registered_mice().is_empty());
         }
     }
 }
